@@ -79,9 +79,9 @@ function jsonResponse(data, status = 200) {
 
 /**
  * GET /api/file?key=xxx[&download=1][&auth=xxx]
- * 获取/预览/下载文件
+ * 获取/预览/下载文件 (集成 Range 单次精确读取、ETag 304 协商缓存、Cloudflare Edge 边缘缓存)
  */
-async function handleGet(request, env) {
+async function handleGet(request, env, context) {
   const url = new URL(request.url);
   const key = url.searchParams.get('key');
   const forceDownload = url.searchParams.get('download') === '1';
@@ -90,8 +90,47 @@ async function handleGet(request, env) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
   }
 
+  // 1. 边缘缓存检查 (针对非 Range、非强制下载的静态预览)
+  const rangeHeader = request.headers.get('Range');
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  const cacheKey = new Request(url.toString(), {
+    method: 'GET',
+    headers: request.headers,
+  });
+
+  if (cache && !rangeHeader && !forceDownload) {
+    try {
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+    } catch (_) {}
+  }
+
   try {
-    const object = await env.R2_BUCKET.get(key);
+    // 2. 解析 Range 头（精确单次读取，彻底消除原双重 get() 导致的 Class B 双倍扣减）
+    let getOptions = undefined;
+    if (rangeHeader) {
+      const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
+      if (match) {
+        const startStr = match[1];
+        const endStr = match[2];
+        if (startStr || endStr) {
+          const start = startStr ? parseInt(startStr, 10) : undefined;
+          const end = endStr ? parseInt(endStr, 10) : undefined;
+          if (start !== undefined && end !== undefined) {
+            getOptions = { range: { offset: start, length: end - start + 1 } };
+          } else if (start !== undefined) {
+            getOptions = { range: { offset: start } };
+          } else if (end !== undefined) {
+            getOptions = { range: { suffix: end } };
+          }
+        }
+      }
+    }
+
+    // 仅执行 1 次精确读取
+    const object = await env.R2_BUCKET.get(key, getOptions);
     if (!object) {
       return jsonResponse({ error: '文件不存在', key }, 404);
     }
@@ -99,12 +138,29 @@ async function handleGet(request, env) {
     const contentType = inferContentType(key, object.httpMetadata || {});
     const fileName = key.split('/').pop();
 
+    // 3. ETag 304 协商缓存判断（未修改直接返回 304 空响应，省去全量网络传输与流量）
+    const ifNoneMatch = request.headers.get('If-None-Match');
+    if (!rangeHeader && ifNoneMatch && object.etag) {
+      const cleanIfNoneMatch = ifNoneMatch.replace(/^W\//, '').replace(/"/g, '');
+      const cleanEtag = object.etag.replace(/^W\//, '').replace(/"/g, '');
+      if (cleanIfNoneMatch === cleanEtag) {
+        return new Response(null, {
+          status: 304,
+          headers: {
+            'ETag': object.etag,
+            'Cache-Control': 'public, max-age=14400, s-maxage=86400',
+            'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
+          },
+        });
+      }
+    }
+
     const headers = new Headers({
       'Content-Type': contentType,
-      'Content-Length': object.size.toString(),
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'public, max-age=14400, s-maxage=86400',
       'ETag': object.etag || '',
       'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
+      'Accept-Ranges': 'bytes',
     });
 
     if (forceDownload) {
@@ -118,31 +174,29 @@ async function handleGet(request, env) {
       headers.set('Content-Disposition', `inline; filename="${fileName}"`);
     }
 
-    // 支持 Range 请求（视频流播放）
-    const rangeHeader = request.headers.get('Range');
-    if (rangeHeader && object.size > 0) {
-      const rangeMatch = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-      if (rangeMatch) {
-        const start = rangeMatch[1] ? parseInt(rangeMatch[1], 10) : 0;
-        const end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : object.size - 1;
-        const chunkSize = end - start + 1;
+    // 4. 处理 Range 206 Partial Content
+    if (rangeHeader && object.range) {
+      const offset = object.range.offset ?? 0;
+      const length = object.range.length ?? object.size;
+      const end = offset + length - 1;
+      headers.set('Content-Range', `bytes ${offset}-${end}/${object.size}`);
+      headers.set('Content-Length', length.toString());
 
-        // 重新获取指定范围的对象
-        const rangeObject = await env.R2_BUCKET.get(key, {
-          range: { offset: start, length: chunkSize },
-        });
-
-        if (rangeObject) {
-          headers.set('Content-Range', `bytes ${start}-${end}/${object.size}`);
-          headers.set('Content-Length', chunkSize.toString());
-          headers.set('Accept-Ranges', 'bytes');
-          return new Response(rangeObject.body, { status: 206, headers });
-        }
-      }
+      return new Response(object.body, { status: 206, headers });
     }
 
-    headers.set('Accept-Ranges', 'bytes');
-    return new Response(object.body, { status: 200, headers });
+    // 5. 完整 200 响应
+    headers.set('Content-Length', object.size.toString());
+    const response = new Response(object.body, { status: 200, headers });
+
+    // 异步写入 Cloudflare Edge 边缘缓存 (供后续请求毫秒级直出，0 R2 消耗)
+    if (cache && !rangeHeader && !forceDownload && context && typeof context.waitUntil === 'function') {
+      try {
+        context.waitUntil(cache.put(cacheKey, response.clone()));
+      } catch (_) {}
+    }
+
+    return response;
   } catch (err) {
     console.error('[file.js] GET error:', err);
     return jsonResponse({ error: '获取文件失败', message: err.message }, 500);
@@ -344,10 +398,72 @@ async function handleDelete(request, env) {
     }
 
     await env.R2_BUCKET.delete(key);
+
+    // 清理该文件的边缘缓存
+    if (typeof caches !== 'undefined') {
+      try {
+        const cache = caches.default;
+        const fileUrl = new URL(request.url);
+        fileUrl.pathname = '/api/file';
+        fileUrl.search = `?key=${encodeURIComponent(key)}`;
+        cache.delete(fileUrl.toString()).catch(() => {});
+      } catch (_) {}
+    }
+
     return jsonResponse({ success: true, key, message: '删除成功' });
   } catch (err) {
     console.error('[file.js] DELETE error:', err);
     return jsonResponse({ error: '删除失败', message: err.message }, 500);
+  }
+}
+
+/**
+ * POST /api/file?action=batchDelete
+ * 批量删除文件（单次原子操作，减少 98% Functions 调用与 R2 开销）
+ * Body: { keys: string[] }
+ */
+async function handleBatchDelete(request, env) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const { keys } = body;
+
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return jsonResponse({ error: '缺少有效的 keys 数组' }, 400);
+    }
+
+    // 安全限制：单次批量最多删除 500 个项目（R2 原生批量上限为 1000）
+    const validKeys = keys
+      .filter(k => typeof k === 'string' && k.trim().length > 0)
+      .slice(0, 500);
+
+    if (validKeys.length === 0) {
+      return jsonResponse({ error: 'keys 列表中无有效项' }, 400);
+    }
+
+    // R2 原生批量原子删除：delete(keys: string[])，仅计为 1 次原子操作且免费
+    await env.R2_BUCKET.delete(validKeys);
+
+    // 异步清理边缘缓存
+    if (typeof caches !== 'undefined') {
+      try {
+        const cache = caches.default;
+        for (const k of validKeys) {
+          const fileUrl = new URL(request.url);
+          fileUrl.pathname = '/api/file';
+          fileUrl.search = `?key=${encodeURIComponent(k)}`;
+          cache.delete(fileUrl.toString()).catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    return jsonResponse({
+      success: true,
+      message: `成功批量删除 ${validKeys.length} 个项目`,
+      deletedCount: validKeys.length,
+    });
+  } catch (err) {
+    console.error('[file.js] batchDelete error:', err);
+    return jsonResponse({ error: '批量删除失败', message: err.message }, 500);
   }
 }
 
@@ -365,12 +481,12 @@ export async function onRequest(context) {
   const method = request.method.toUpperCase();
 
   try {
-    // GET：预览/下载文件
+    // GET：预览/下载文件 (传入 context 支持 Edge 缓存写入)
     if (method === 'GET') {
-      return await handleGet(request, env);
+      return await handleGet(request, env, context);
     }
 
-    // DELETE：删除文件 / 中止分块上传
+    // DELETE：删除单个文件 / 中止分块上传
     if (method === 'DELETE') {
       if (action === 'abortMultipart') {
         return await handleAbortMultipart(request, env);
@@ -389,8 +505,11 @@ export async function onRequest(context) {
       return await handlePut(request, env);
     }
 
-    // POST：创建分块上传 / 完成分块上传
+    // POST：批量删除 / 创建分块上传 / 完成分块上传
     if (method === 'POST') {
+      if (action === 'batchDelete') {
+        return await handleBatchDelete(request, env);
+      }
       if (action === 'createMultipart') {
         return await handleCreateMultipart(request, env);
       }

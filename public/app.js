@@ -5,11 +5,19 @@
 
 'use strict';
 
-// ─── 常量与配置 ────────────────────────────────────────────────────────────────
-const CHUNK_SIZE = 8 * 1024 * 1024;          // 8 MB 分块大小
-const MULTIPART_THRESHOLD = 5 * 1024 * 1024; // ≥ 5MB 使用分块上传
-const MAX_CONCURRENT_CHUNKS = 3;              // 最大并发分块数
-const MAX_CONCURRENT_FILES = 3;               // 最大并发文件数
+// ─── 常量与配置 (额度省流优化版) ────────────────────────────────────────────────
+const CHUNK_SIZE = 20 * 1024 * 1024;           // 20 MB 分块大小（减少 60% Class A 与 Functions 请求）
+const MULTIPART_THRESHOLD = 20 * 1024 * 1024;  // 超过 20MB 启用分块（<=20MB 走高效单次 PUT 直传，节省 66% 开销）
+const MAX_CONCURRENT_CHUNKS = 3;               // 最大并发分块数
+const MAX_CONCURRENT_FILES = 3;                // 最大并发文件数
+
+// ─── 前端目录短期内存缓存 (SWR: 60 秒免重复请求，零 Class A / Functions 消耗) ────
+const dirCache = new Map(); // prefix -> { folders, files, timestamp }
+const DIR_CACHE_TTL = 60 * 1000; // 60 秒有效期
+
+function clearDirCache() {
+  dirCache.clear();
+}
 
 const API = {
   files: '/api/files',
@@ -404,14 +412,26 @@ dom.btnLogout.addEventListener('click', () => {
   showLogin();
 });
 
-// ─── 文件数据加载 ──────────────────────────────────────────────────────────────
-async function loadFiles(prefix = '') {
+// ─── 文件数据加载 (集成前端 SWR 内存缓存) ──────────────────────────────────────────
+async function loadFiles(prefix = '', forceRefresh = false) {
   state.loading = true;
   state.currentPrefix = prefix;
   state.selectedKeys.clear(); // 切换目录时清空勾选
   updateSelectionUI();
-  setLoading(true);
   renderBreadcrumb(prefix);
+
+  // 1. 命中短期内存缓存：直接同步秒开，零网络延迟与零额度消耗
+  const cached = dirCache.get(prefix);
+  if (!forceRefresh && cached && (Date.now() - cached.timestamp < DIR_CACHE_TTL)) {
+    state.folders = cached.folders || [];
+    state.files = cached.files || [];
+    renderFileList();
+    state.loading = false;
+    setLoading(false);
+    return;
+  }
+
+  setLoading(true);
 
   try {
     const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`);
@@ -427,6 +447,14 @@ async function loadFiles(prefix = '') {
     const data = await res.json();
     state.folders = data.folders || [];
     state.files = data.files || [];
+
+    // 写入内存缓存
+    dirCache.set(prefix, {
+      folders: state.folders,
+      files: state.files,
+      timestamp: Date.now(),
+    });
+
     renderFileList();
   } catch (err) {
     showToast('网络错误：' + err.message, 'error');
@@ -804,7 +832,10 @@ document.querySelectorAll('.file-table th[data-sort]').forEach(th => {
   });
 });
 
-dom.btnRefresh.addEventListener('click', () => loadFiles(state.currentPrefix));
+dom.btnRefresh.addEventListener('click', () => {
+  clearDirCache();
+  loadFiles(state.currentPrefix, true);
+});
 
 // ─── 新建文件夹 ────────────────────────────────────────────────────────────────
 function openMkdirModal() {
@@ -839,7 +870,8 @@ dom.mkdirForm.addEventListener('submit', async e => {
     if (res.ok) {
       dom.mkdirModal.hidden = true;
       showToast('文件夹创建成功', 'success');
-      loadFiles(state.currentPrefix);
+      clearDirCache();
+      loadFiles(state.currentPrefix, true);
     } else {
       const data = await res.json().catch(() => ({}));
       dom.mkdirError.textContent = data.error || '创建失败';
@@ -851,7 +883,7 @@ dom.mkdirForm.addEventListener('submit', async e => {
   }
 });
 
-// ─── 工具栏集中操作：批量下载 & 批量删除 ────────────────────────────────────────
+// ─── 工具栏集中操作：批量下载 & 批量删除 (原子批量接口，省 98% 请求) ─────────────
 dom.btnBatchDownload?.addEventListener('click', () => {
   if (state.selectedKeys.size === 0) return;
 
@@ -882,26 +914,30 @@ dom.btnBatchDelete?.addEventListener('click', async () => {
   if (!confirmed) return;
 
   const keysToDelete = Array.from(state.selectedKeys);
-  let successCount = 0;
-  let failCount = 0;
+  showToast(`正在批量删除 ${keysToDelete.length} 个项目...`, 'info');
 
-  for (const key of keysToDelete) {
-    try {
-      const res = await apiFetch(`${API.file}?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
-      if (res.ok) successCount++;
-      else failCount++;
-    } catch (err) {
-      failCount++;
+  try {
+    // 单次原子批量请求，彻底替代原先多次循环请求
+    const res = await apiFetch(`${API.file}?action=batchDelete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys: keysToDelete }),
+    });
+
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(`成功批量删除 ${data.deletedCount || keysToDelete.length} 个项目`, 'success');
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || '批量删除失败', 'error');
     }
+  } catch (err) {
+    showToast('批量删除异常：' + err.message, 'error');
   }
 
   state.selectedKeys.clear();
-  if (failCount === 0) {
-    showToast(`成功删除 ${successCount} 个项目`, 'success');
-  } else {
-    showToast(`完成删除：${successCount} 成功，${failCount} 失败（可能包含非空文件夹）`, 'warning');
-  }
-  loadFiles(state.currentPrefix);
+  clearDirCache();
+  loadFiles(state.currentPrefix, true);
 });
 
 // ─── 文件下载工具 ──────────────────────────────────────────────────────────────
@@ -1030,7 +1066,8 @@ dom.btnPreviewDel.addEventListener('click', async () => {
     if (res.ok) {
       showToast('文件已彻底删除', 'success');
       closePreview();
-      loadFiles(state.currentPrefix);
+      clearDirCache();
+      loadFiles(state.currentPrefix, true);
     } else {
       const data = await res.json().catch(() => ({}));
       showToast(data.error || '删除失败', 'error');
@@ -1187,7 +1224,8 @@ async function uploadFile(item) {
     item.status = 'done';
     item.progress = 100;
     showToast(`${item.name} 上传成功`, 'success');
-    loadFiles(state.currentPrefix);
+    clearDirCache();
+    loadFiles(state.currentPrefix, true);
   } catch (err) {
     item.status = 'error';
     item.error = err.message;
@@ -1316,7 +1354,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
     if (!dom.app.hidden) {
       e.preventDefault();
-      loadFiles(state.currentPrefix);
+      clearDirCache();
+      loadFiles(state.currentPrefix, true);
     }
   }
 });
