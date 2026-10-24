@@ -65,7 +65,7 @@
   ═══════════════════════════════════════════════ -->
   <div id="app" hidden>
 
-    <!-- 顶部半透明毛玻璃导航栏（无多余云朵图案） -->
+    <!-- 顶部半透明毛玻璃导航栏 -->
     <header class="header">
       <div class="header-left">
         <span class="header-title">R2 云盘</span>
@@ -119,7 +119,7 @@
         </nav>
       </div>
 
-      <!-- 工具栏（手机端与桌面端自适应排列） -->
+      <!-- 工具栏（集成上传、新建文件夹、集中下载、集中删除） -->
       <div class="toolbar">
         <div class="toolbar-left">
           <button id="btn-upload" class="btn btn-primary">
@@ -138,6 +138,22 @@
               <line x1="9" x2="15" y1="13" y2="13"/>
             </svg>
             新建文件夹
+          </button>
+          <button id="btn-batch-download" class="btn btn-secondary" disabled title="下载勾选项">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" x2="12" y1="15" y2="3"/>
+            </svg>
+            <span id="text-batch-download">下载</span>
+          </button>
+          <button id="btn-batch-delete" class="btn btn-danger-ghost" disabled title="删除勾选项">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px">
+              <path d="M3 6h18"/>
+              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+            </svg>
+            <span id="text-batch-delete">删除</span>
           </button>
         </div>
         <div class="toolbar-right">
@@ -187,13 +203,16 @@
         <div id="upload-list" class="upload-list"></div>
       </div>
 
-      <!-- 主文件列表卡片容器 -->
+      <!-- 主文件列表卡片容器 (左侧勾选框 + 点击整行直达预览) -->
       <div id="list-container" class="list-container">
         <!-- 列表视图 -->
         <div id="file-list-view" class="file-list-view">
           <table class="file-table" id="file-table">
             <thead>
               <tr>
+                <th class="col-checkbox">
+                  <input type="checkbox" id="select-all-checkbox" class="custom-checkbox" aria-label="全选" />
+                </th>
                 <th class="col-name" data-sort="name">
                   名称
                   <span class="sort-icon">↕</span>
@@ -206,7 +225,6 @@
                   修改时间
                   <span class="sort-icon">↕</span>
                 </th>
-                <th class="col-actions">操作</th>
               </tr>
             </thead>
             <tbody id="file-tbody"></tbody>

@@ -1,6 +1,6 @@
 /**
- * app.js — R2 云盘前端核心逻辑 (Apple iOS/macOS 现代微质感升级版)
- * 纯原生 JavaScript | 无外部依赖 | 毫秒级首屏 | 全矢量 SVG 图标
+ * app.js — R2 云盘前端核心逻辑 (Apple 现代微质感 · 复选框多选与集中操作版)
+ * 纯原生 JavaScript | 零外部依赖 | 毫秒级首屏 | 全矢量 SVG 图标
  */
 
 'use strict';
@@ -44,7 +44,7 @@ const EXT_TYPE_MAP = {
 // 支持直接在线预览的文件类型
 const PREVIEW_TYPES = new Set(['image', 'video', 'audio', 'text', 'code', 'pdf']);
 
-// ─── SVG 矢量图标引擎 (清晰锐利，告别普通 Emoji) ────────────────────────────────
+// ─── SVG 矢量图标引擎 ──────────────────────────────────────────────────────────
 function renderSvgIcon(type, size = 20) {
   const icons = {
     folder: `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#0071e3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -113,6 +113,7 @@ const state = {
   currentPrefix: '',
   files:         [],
   folders:       [],
+  selectedKeys:  new Set(),  // 勾选中的项目 key 集合
   viewMode:      localStorage.getItem('view_mode') || 'list',
   sortKey:       'name',
   sortDir:       'asc',
@@ -124,67 +125,73 @@ const state = {
 // ─── DOM 缓存 ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const dom = {
-  appLoader:       $('app-loader'),
-  loginModal:      $('login-modal'),
-  loginForm:       $('login-form'),
-  passwordInput:   $('password-input'),
-  togglePassword:  $('toggle-password'),
-  eyeIcon:         $('eye-icon'),
-  loginError:      $('login-error'),
-  loginBtnText:    $('login-btn-text'),
-  loginSpinner:    $('login-spinner'),
+  appLoader:          $('app-loader'),
+  loginModal:         $('login-modal'),
+  loginForm:          $('login-form'),
+  passwordInput:      $('password-input'),
+  togglePassword:     $('toggle-password'),
+  eyeIcon:            $('eye-icon'),
+  loginError:         $('login-error'),
+  loginBtnText:       $('login-btn-text'),
+  loginSpinner:       $('login-spinner'),
 
-  app:             $('app'),
-  breadcrumb:      $('breadcrumb'),
+  app:                $('app'),
+  breadcrumb:         $('breadcrumb'),
 
-  btnViewList:     $('btn-view-list'),
-  btnViewGrid:     $('btn-view-grid'),
-  btnLogout:       $('btn-logout'),
+  btnViewList:        $('btn-view-list'),
+  btnViewGrid:        $('btn-view-grid'),
+  btnLogout:          $('btn-logout'),
 
-  btnUpload:       $('btn-upload'),
-  fileInput:       $('file-input'),
-  btnMkdir:        $('btn-mkdir'),
-  btnRefresh:      $('btn-refresh'),
-  fileCount:       $('file-count'),
+  btnUpload:          $('btn-upload'),
+  fileInput:          $('file-input'),
+  btnMkdir:           $('btn-mkdir'),
+  btnBatchDownload:   $('btn-batch-download'),
+  textBatchDownload:  $('text-batch-download'),
+  btnBatchDelete:     $('btn-batch-delete'),
+  textBatchDelete:    $('text-batch-delete'),
+  btnRefresh:         $('btn-refresh'),
+  fileCount:          $('file-count'),
 
-  dropOverlay:     $('drop-overlay'),
+  dropOverlay:        $('drop-overlay'),
 
-  uploadPanel:     $('upload-panel'),
-  uploadList:      $('upload-list'),
-  btnClearDone:    $('btn-clear-done'),
-  btnClosePanel:   $('btn-close-panel'),
+  uploadPanel:        $('upload-panel'),
+  uploadList:         $('upload-list'),
+  btnClearDone:       $('btn-clear-done'),
+  btnClosePanel:      $('btn-close-panel'),
 
-  listContainer:   $('list-container'),
-  fileListView:    $('file-list-view'),
-  fileGridView:    $('file-grid-view'),
-  fileTbody:       $('file-tbody'),
-  fileGrid:        $('file-grid'),
-  emptyHint:       $('empty-hint'),
-  emptyHintGrid:   $('empty-hint-grid'),
-  loadingHint:     $('loading-hint'),
+  listContainer:      $('list-container'),
+  fileListView:       $('file-list-view'),
+  fileGridView:       $('file-grid-view'),
+  fileTable:          $('file-table'),
+  selectAllCheckbox:  $('select-all-checkbox'),
+  fileTbody:          $('file-tbody'),
+  fileGrid:           $('file-grid'),
+  emptyHint:          $('empty-hint'),
+  emptyHintGrid:      $('empty-hint-grid'),
+  loadingHint:        $('loading-hint'),
 
-  previewModal:    $('preview-modal'),
-  previewIcon:     $('preview-icon'),
-  previewFilename: $('preview-filename'),
-  previewMeta:     $('preview-meta'),
-  previewBody:     $('preview-body'),
-  btnPreviewDl:    $('btn-preview-download'),
-  btnPreviewDel:   $('btn-preview-delete'),
-  btnPreviewClose: $('btn-preview-close'),
+  previewModal:       $('preview-modal'),
+  previewIcon:        $('preview-icon'),
+  previewFilename:    $('preview-filename'),
+  previewMeta:        $('preview-meta'),
+  previewBody:        $('preview-body'),
+  btnPreviewDl:       $('btn-preview-download'),
+  btnPreviewDel:      $('btn-preview-delete'),
+  btnPreviewClose:    $('btn-preview-close'),
 
-  mkdirModal:      $('mkdir-modal'),
-  mkdirForm:       $('mkdir-form'),
-  mkdirInput:      $('mkdir-input'),
-  mkdirError:      $('mkdir-error'),
-  btnMkdirCancel:  $('btn-mkdir-cancel'),
+  mkdirModal:         $('mkdir-modal'),
+  mkdirForm:          $('mkdir-form'),
+  mkdirInput:         $('mkdir-input'),
+  mkdirError:         $('mkdir-error'),
+  btnMkdirCancel:     $('btn-mkdir-cancel'),
 
-  confirmModal:    $('confirm-modal'),
-  confirmTitle:    $('confirm-title'),
-  confirmMessage:  $('confirm-message'),
-  btnConfirmCancel:$('btn-confirm-cancel'),
-  btnConfirmOk:    $('btn-confirm-ok'),
+  confirmModal:       $('confirm-modal'),
+  confirmTitle:       $('confirm-title'),
+  confirmMessage:     $('confirm-message'),
+  btnConfirmCancel:   $('btn-confirm-cancel'),
+  btnConfirmOk:       $('btn-confirm-ok'),
 
-  toastContainer:  $('toast-container'),
+  toastContainer:     $('toast-container'),
 };
 
 // ─── 基础工具函数 ──────────────────────────────────────────────────────────────
@@ -245,10 +252,6 @@ function buildDownloadUrl(key) {
   return url.toString();
 }
 
-/**
- * 统一 API fetch
- * 修复 Bug：仅在 headers 未提供 X-Drive-Password 时注入 state.password，避免覆盖新密码
- */
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.password && !headers.has('X-Drive-Password')) {
@@ -258,7 +261,7 @@ async function apiFetch(url, options = {}) {
   return res;
 }
 
-// ─── Toast 通知系统 (精致微质感) ──────────────────────────────────────────────
+// ─── Toast 通知系统 ────────────────────────────────────────────────────────────
 function showToast(message, type = 'info', duration = 3000) {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
@@ -299,8 +302,7 @@ function showConfirm(title, message) {
   });
 }
 
-// ─── 鉴权逻辑 (彻底消除首屏闪烁) ──────────────────────────────────────────────
-
+// ─── 鉴权与首屏流 ──────────────────────────────────────────────────────────────
 async function tryAuth(password) {
   try {
     const res = await apiFetch(`${API.files}?prefix=`, {
@@ -312,12 +314,6 @@ async function tryAuth(password) {
   }
 }
 
-/**
- * 初始化鉴权：
- * 1. 若有缓存密码，静默验证；
- * 2. 若无缓存密码，尝试空密码访问（探测是否为免密网盘）；
- * 3. 仅在确实需要密码时才展现登录框，实现 0 闪烁体验。
- */
 async function initAuth() {
   if (state.password) {
     const ok = await tryAuth(state.password);
@@ -326,11 +322,9 @@ async function initAuth() {
       showApp();
       return;
     }
-    // 密码失效，清除缓存
     state.password = '';
     localStorage.removeItem('drive_password');
   } else {
-    // 探测服务器是否免密
     const noPasswordNeeded = await tryAuth('');
     if (noPasswordNeeded) {
       hideLoader();
@@ -339,7 +333,6 @@ async function initAuth() {
     }
   }
 
-  // 必须输入密码
   hideLoader();
   showLogin();
 }
@@ -347,7 +340,7 @@ async function initAuth() {
 function hideLoader() {
   if (dom.appLoader) {
     dom.appLoader.style.opacity = '0';
-    setTimeout(() => { dom.appLoader.hidden = true; }, 300);
+    setTimeout(() => { dom.appLoader.hidden = true; }, 250);
   }
 }
 
@@ -364,7 +357,6 @@ function showApp() {
   loadFiles(state.currentPrefix);
 }
 
-// 登录表单处理
 dom.loginForm.addEventListener('submit', async e => {
   e.preventDefault();
   const pwd = dom.passwordInput.value.trim();
@@ -394,7 +386,6 @@ dom.loginForm.addEventListener('submit', async e => {
   }
 });
 
-// 密码显示/隐藏
 dom.togglePassword.addEventListener('click', () => {
   const isText = dom.passwordInput.type === 'text';
   dom.passwordInput.type = isText ? 'password' : 'text';
@@ -403,13 +394,13 @@ dom.togglePassword.addEventListener('click', () => {
     : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>`;
 });
 
-// 锁定并退出
 dom.btnLogout.addEventListener('click', () => {
   state.password = '';
   localStorage.removeItem('drive_password');
   state.currentPrefix = '';
   state.files = [];
   state.folders = [];
+  state.selectedKeys.clear();
   showLogin();
 });
 
@@ -417,6 +408,8 @@ dom.btnLogout.addEventListener('click', () => {
 async function loadFiles(prefix = '') {
   state.loading = true;
   state.currentPrefix = prefix;
+  state.selectedKeys.clear(); // 切换目录时清空勾选
+  updateSelectionUI();
   setLoading(true);
   renderBreadcrumb(prefix);
 
@@ -447,7 +440,7 @@ function setLoading(loading) {
   dom.loadingHint.hidden = !loading;
 }
 
-// ─── 面包屑导航 (横向平滑滚动) ────────────────────────────────────────────────
+// ─── 面包屑导航 ────────────────────────────────────────────────────────────────
 function renderBreadcrumb(prefix) {
   dom.breadcrumb.innerHTML = '';
 
@@ -488,6 +481,72 @@ function renderBreadcrumb(prefix) {
   });
 }
 
+// ─── 多选与工具栏联动控制 (核心重构) ───────────────────────────────────────────
+function toggleItemSelection(key) {
+  if (state.selectedKeys.has(key)) {
+    state.selectedKeys.delete(key);
+  } else {
+    state.selectedKeys.add(key);
+  }
+  updateSelectionUI();
+  updateRowsSelectionClass();
+}
+
+function updateSelectionUI() {
+  const totalItems = state.folders.length + state.files.length;
+  const count = state.selectedKeys.size;
+
+  // 更新表头全选框状态
+  if (dom.selectAllCheckbox) {
+    dom.selectAllCheckbox.checked = totalItems > 0 && count === totalItems;
+    dom.selectAllCheckbox.indeterminate = count > 0 && count < totalItems;
+  }
+
+  // 更新工具栏批量下载按钮
+  if (dom.btnBatchDownload) {
+    dom.btnBatchDownload.disabled = count === 0;
+    dom.textBatchDownload.textContent = count > 0 ? `下载 (${count})` : '下载';
+  }
+
+  // 更新工具栏批量删除按钮
+  if (dom.btnBatchDelete) {
+    dom.btnBatchDelete.disabled = count === 0;
+    dom.textBatchDelete.textContent = count > 0 ? `删除 (${count})` : '删除';
+  }
+}
+
+function updateRowsSelectionClass() {
+  // 更新表格行的高亮状态与复选框勾选态
+  document.querySelectorAll('#file-tbody tr[data-key]').forEach(tr => {
+    const key = tr.dataset.key;
+    const isChecked = state.selectedKeys.has(key);
+    tr.classList.toggle('row-selected', isChecked);
+    const cb = tr.querySelector('.item-checkbox');
+    if (cb) cb.checked = isChecked;
+  });
+
+  // 更新网格卡片的高亮状态与复选框勾选态
+  document.querySelectorAll('#file-grid .grid-item[data-key]').forEach(card => {
+    const key = card.dataset.key;
+    const isChecked = state.selectedKeys.has(key);
+    card.classList.toggle('card-selected', isChecked);
+    const cb = card.querySelector('.item-checkbox');
+    if (cb) cb.checked = isChecked;
+  });
+}
+
+// 表头全选事件监听
+dom.selectAllCheckbox?.addEventListener('change', e => {
+  const shouldSelectAll = e.target.checked;
+  state.selectedKeys.clear();
+  if (shouldSelectAll) {
+    state.folders.forEach(f => state.selectedKeys.add(f));
+    state.files.forEach(f => state.selectedKeys.add(f.key));
+  }
+  updateSelectionUI();
+  updateRowsSelectionClass();
+});
+
 // ─── 排序与列表渲染 ────────────────────────────────────────────────────────────
 function getSortedItems() {
   const { sortKey, sortDir } = state;
@@ -525,7 +584,7 @@ function renderFileList() {
   const totalCount = sortedFolders.length + sortedFiles.length;
 
   dom.fileCount.textContent = totalCount > 0
-    ? `${sortedFolders.length} 个文件夹 · ${sortedFiles.length} 个文件`
+    ? `${sortedFolders.length} 文件夹 · ${sortedFiles.length} 文件`
     : '';
 
   if (state.viewMode === 'list') {
@@ -533,20 +592,29 @@ function renderFileList() {
   } else {
     renderGridView(sortedFolders, sortedFiles);
   }
+  updateSelectionUI();
 }
 
-/** 列表视图渲染 (支持移动端副标题排版与全触控热区) */
+/** 列表视图渲染 (左侧复选框 · 取消右侧操作列 · 点击整行直达预览) */
 function renderListView(folders, files) {
   dom.fileTbody.innerHTML = '';
   const isEmpty = folders.length === 0 && files.length === 0;
   dom.emptyHint.hidden = !isEmpty || state.loading;
 
-  // 渲染文件夹
+  // 渲染文件夹行
   folders.forEach(folderPrefix => {
     const name = getFileName(folderPrefix) || folderPrefix;
+    const isSelected = state.selectedKeys.has(folderPrefix);
+
     const tr = document.createElement('tr');
+    tr.dataset.key = folderPrefix;
+    if (isSelected) tr.classList.add('row-selected');
+
     tr.innerHTML = `
-      <td>
+      <td class="col-checkbox">
+        <input type="checkbox" class="custom-checkbox item-checkbox" data-key="${escapeHtml(folderPrefix)}" ${isSelected ? 'checked' : ''} aria-label="选择文件夹" />
+      </td>
+      <td class="col-name">
         <div class="file-name-cell">
           <div class="file-icon-box">
             ${renderSvgIcon('folder', 20)}
@@ -558,32 +626,39 @@ function renderListView(folders, files) {
         </div>
       </td>
       <td class="col-size">—</td>
-      <td class="col-date">—</td>
-      <td class="col-actions">
-        <div class="action-group">
-          <button class="action-btn delete btn-delete-folder" data-key="${escapeHtml(folderPrefix)}" title="删除文件夹" aria-label="删除文件夹">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-          </button>
-        </div>
-      </td>`;
+      <td class="col-date">—</td>`;
 
-    tr.querySelector('.file-name-cell').addEventListener('click', () => loadFiles(folderPrefix));
-    tr.querySelector('.btn-delete-folder').addEventListener('click', e => {
+    // 勾选框事件（阻断行点击）
+    const cb = tr.querySelector('.item-checkbox');
+    cb.addEventListener('click', e => {
       e.stopPropagation();
-      handleDeleteFolder(folderPrefix);
+      toggleItemSelection(folderPrefix);
     });
+
+    // 点击行直达进入文件夹
+    tr.addEventListener('click', e => {
+      if (e.target.closest('.item-checkbox')) return;
+      loadFiles(folderPrefix);
+    });
+
     dom.fileTbody.appendChild(tr);
   });
 
-  // 渲染文件
+  // 渲染文件行
   files.forEach(file => {
     const name = getFileName(file.key);
     const type = getFileType(file.key);
-    const canPreview = PREVIEW_TYPES.has(type);
+    const isSelected = state.selectedKeys.has(file.key);
+
     const tr = document.createElement('tr');
+    tr.dataset.key = file.key;
+    if (isSelected) tr.classList.add('row-selected');
 
     tr.innerHTML = `
-      <td>
+      <td class="col-checkbox">
+        <input type="checkbox" class="custom-checkbox item-checkbox" data-key="${escapeHtml(file.key)}" ${isSelected ? 'checked' : ''} aria-label="选择文件" />
+      </td>
+      <td class="col-name">
         <div class="file-name-cell">
           <div class="file-icon-box">
             ${renderSvgIcon(type, 20)}
@@ -595,43 +670,25 @@ function renderListView(folders, files) {
         </div>
       </td>
       <td class="col-size">${formatSize(file.size)}</td>
-      <td class="col-date">${formatDate(file.uploaded)}</td>
-      <td class="col-actions">
-        <div class="action-group">
-          ${canPreview ? `
-            <button class="action-btn btn-preview" title="在线预览" aria-label="在线预览">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>` : ''}
-          <button class="action-btn btn-download" title="下载文件" aria-label="下载文件">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-          </button>
-          <button class="action-btn delete btn-delete" title="删除文件" aria-label="删除文件">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-          </button>
-        </div>
-      </td>`;
+      <td class="col-date">${formatDate(file.uploaded)}</td>`;
 
-    tr.querySelector('.file-name-cell').addEventListener('click', () => {
-      if (canPreview) openPreview(file);
-      else downloadFile(file.key);
-    });
-    tr.querySelector('.btn-download')?.addEventListener('click', e => {
+    // 勾选框事件（阻断行点击）
+    const cb = tr.querySelector('.item-checkbox');
+    cb.addEventListener('click', e => {
       e.stopPropagation();
-      downloadFile(file.key);
+      toggleItemSelection(file.key);
     });
-    tr.querySelector('.btn-preview')?.addEventListener('click', e => {
-      e.stopPropagation();
+
+    // 点击行直接唤起文件预览
+    tr.addEventListener('click', e => {
+      if (e.target.closest('.item-checkbox')) return;
       openPreview(file);
-    });
-    tr.querySelector('.btn-delete')?.addEventListener('click', e => {
-      e.stopPropagation();
-      handleDeleteFile(file.key);
     });
 
     dom.fileTbody.appendChild(tr);
   });
 
-  // 更新表头排序状态
+  // 更新表头排序样式
   document.querySelectorAll('.file-table th[data-sort]').forEach(th => {
     th.classList.remove('sorted-asc', 'sorted-desc');
     if (th.dataset.sort === state.sortKey) {
@@ -640,7 +697,7 @@ function renderListView(folders, files) {
   });
 }
 
-/** 网格视图渲染 */
+/** 网格视图渲染 (卡片左上角复选框 · 点击卡片直达预览) */
 function renderGridView(folders, files) {
   dom.fileGrid.innerHTML = '';
   const isEmpty = folders.length === 0 && files.length === 0;
@@ -649,27 +706,31 @@ function renderGridView(folders, files) {
   // 文件夹
   folders.forEach(folderPrefix => {
     const name = getFileName(folderPrefix) || folderPrefix;
+    const isSelected = state.selectedKeys.has(folderPrefix);
+
     const item = document.createElement('div');
     item.className = 'grid-item';
+    item.dataset.key = folderPrefix;
+    if (isSelected) item.classList.add('card-selected');
+
     item.innerHTML = `
+      <input type="checkbox" class="custom-checkbox grid-item-checkbox item-checkbox" data-key="${escapeHtml(folderPrefix)}" ${isSelected ? 'checked' : ''} />
       <div class="grid-icon-box">
         ${renderSvgIcon('folder', 32)}
       </div>
       <span class="grid-item-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
-      <span class="grid-item-sub">文件夹</span>
-      <div class="grid-item-actions">
-        <button class="action-btn delete" title="删除文件夹">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-        </button>
-      </div>`;
+      <span class="grid-item-sub">文件夹</span>`;
+
+    item.querySelector('.item-checkbox').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleItemSelection(folderPrefix);
+    });
 
     item.addEventListener('click', e => {
-      if (!e.target.closest('.grid-item-actions')) loadFiles(folderPrefix);
+      if (e.target.closest('.item-checkbox')) return;
+      loadFiles(folderPrefix);
     });
-    item.querySelector('.grid-item-actions button').addEventListener('click', e => {
-      e.stopPropagation();
-      handleDeleteFolder(folderPrefix);
-    });
+
     dom.fileGrid.appendChild(item);
   });
 
@@ -677,43 +738,29 @@ function renderGridView(folders, files) {
   files.forEach(file => {
     const name = getFileName(file.key);
     const type = getFileType(file.key);
-    const canPreview = PREVIEW_TYPES.has(type);
+    const isSelected = state.selectedKeys.has(file.key);
+
     const item = document.createElement('div');
     item.className = 'grid-item';
+    item.dataset.key = file.key;
+    if (isSelected) item.classList.add('card-selected');
 
     item.innerHTML = `
+      <input type="checkbox" class="custom-checkbox grid-item-checkbox item-checkbox" data-key="${escapeHtml(file.key)}" ${isSelected ? 'checked' : ''} />
       <div class="grid-icon-box">
         ${renderSvgIcon(type, 32)}
       </div>
       <span class="grid-item-name" title="${escapeHtml(file.key)}">${escapeHtml(name)}</span>
-      <span class="grid-item-sub">${formatSize(file.size)}</span>
-      <div class="grid-item-actions">
-        ${canPreview ? `
-          <button class="action-btn" data-action="preview" title="预览">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>` : ''}
-        <button class="action-btn" data-action="download" title="下载">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-        </button>
-        <button class="action-btn delete" data-action="delete" title="删除">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-        </button>
-      </div>`;
+      <span class="grid-item-sub">${formatSize(file.size)}</span>`;
 
-    item.addEventListener('click', e => {
-      if (e.target.closest('.grid-item-actions')) return;
-      if (canPreview) openPreview(file);
-      else downloadFile(file.key);
+    item.querySelector('.item-checkbox').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleItemSelection(file.key);
     });
 
-    item.querySelectorAll('.grid-item-actions button').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        const action = btn.dataset.action;
-        if (action === 'preview') openPreview(file);
-        else if (action === 'download') downloadFile(file.key);
-        else if (action === 'delete') handleDeleteFile(file.key);
-      });
+    item.addEventListener('click', e => {
+      if (e.target.closest('.item-checkbox')) return;
+      openPreview(file);
     });
 
     dom.fileGrid.appendChild(item);
@@ -804,47 +851,60 @@ dom.mkdirForm.addEventListener('submit', async e => {
   }
 });
 
-// ─── 文件与文件夹删除 ──────────────────────────────────────────────────────────
-async function handleDeleteFile(key) {
-  const name = getFileName(key);
-  const confirmed = await showConfirm('确认删除文件', `确定要删除 "${name}" 吗？此操作无法撤销。`);
+// ─── 工具栏集中操作：批量下载 & 批量删除 ────────────────────────────────────────
+dom.btnBatchDownload?.addEventListener('click', () => {
+  if (state.selectedKeys.size === 0) return;
+
+  // 筛选出选中的文件（文件夹不支持打包下载）
+  const filesToDownload = state.files.filter(f => state.selectedKeys.has(f.key));
+  if (filesToDownload.length === 0) {
+    showToast('选中的项目中没有可下载的文件（文件夹不支持直接下载）', 'warning');
+    return;
+  }
+
+  showToast(`正在开始下载 ${filesToDownload.length} 个文件...`, 'info');
+  filesToDownload.forEach((f, index) => {
+    // 间隔微延迟避免浏览器阻止多弹窗下载
+    setTimeout(() => {
+      downloadFile(f.key);
+    }, index * 200);
+  });
+});
+
+dom.btnBatchDelete?.addEventListener('click', async () => {
+  const count = state.selectedKeys.size;
+  if (count === 0) return;
+
+  const confirmed = await showConfirm(
+    '确认批量删除',
+    `确定要删除已选中的 ${count} 个项目吗？注意：非空文件夹无法删除。此操作无法撤销。`
+  );
   if (!confirmed) return;
 
-  try {
-    const res = await apiFetch(`${API.file}?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
-    if (res.ok) {
-      showToast('文件已彻底删除', 'success');
-      if (state.previewItem?.key === key) closePreview();
-      loadFiles(state.currentPrefix);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      showToast(data.error || '删除失败', 'error');
+  const keysToDelete = Array.from(state.selectedKeys);
+  let successCount = 0;
+  let failCount = 0;
+
+  for (const key of keysToDelete) {
+    try {
+      const res = await apiFetch(`${API.file}?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
+      if (res.ok) successCount++;
+      else failCount++;
+    } catch (err) {
+      failCount++;
     }
-  } catch (err) {
-    showToast('网络错误：' + err.message, 'error');
   }
-}
 
-async function handleDeleteFolder(folderKey) {
-  const name = getFileName(folderKey) || folderKey;
-  const confirmed = await showConfirm('确认删除文件夹', `确定要删除文件夹 "${name}" 吗？注意只能删除空文件夹。`);
-  if (!confirmed) return;
-
-  try {
-    const res = await apiFetch(`${API.file}?key=${encodeURIComponent(folderKey)}`, { method: 'DELETE' });
-    if (res.ok) {
-      showToast('文件夹已成功删除', 'success');
-      loadFiles(state.currentPrefix);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      showToast(data.error || '删除失败（文件夹内可能含有文件）', 'error');
-    }
-  } catch (err) {
-    showToast('网络错误：' + err.message, 'error');
+  state.selectedKeys.clear();
+  if (failCount === 0) {
+    showToast(`成功删除 ${successCount} 个项目`, 'success');
+  } else {
+    showToast(`完成删除：${successCount} 成功，${failCount} 失败（可能包含非空文件夹）`, 'warning');
   }
-}
+  loadFiles(state.currentPrefix);
+});
 
-// ─── 文件下载 ──────────────────────────────────────────────────────────────────
+// ─── 文件下载工具 ──────────────────────────────────────────────────────────────
 function downloadFile(key) {
   const url = buildDownloadUrl(key);
   const a = document.createElement('a');
@@ -856,7 +916,7 @@ function downloadFile(key) {
   document.body.removeChild(a);
 }
 
-// ─── 文件在线预览 Modal ────────────────────────────────────────────────────────
+// ─── 文件在线预览 Modal (支持直接下载与删除) ───────────────────────────────────
 async function openPreview(file) {
   state.previewItem = file;
   const name = getFileName(file.key);
@@ -959,8 +1019,25 @@ dom.btnPreviewDl.addEventListener('click', () => {
   if (state.previewItem) downloadFile(state.previewItem.key);
 });
 
-dom.btnPreviewDel.addEventListener('click', () => {
-  if (state.previewItem) handleDeleteFile(state.previewItem.key);
+dom.btnPreviewDel.addEventListener('click', async () => {
+  if (!state.previewItem) return;
+  const key = state.previewItem.key;
+  const confirmed = await showConfirm('确认删除', `确定要删除 "${getFileName(key)}" 吗？`);
+  if (!confirmed) return;
+
+  try {
+    const res = await apiFetch(`${API.file}?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast('文件已彻底删除', 'success');
+      closePreview();
+      loadFiles(state.currentPrefix);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || '删除失败', 'error');
+    }
+  } catch (err) {
+    showToast('网络错误：' + err.message, 'error');
+  }
 });
 
 // ─── 文件上传系统 ──────────────────────────────────────────────────────────────
@@ -1147,7 +1224,6 @@ async function uploadSimple(item, key) {
 async function uploadMultipart(item, key) {
   const contentType = item.file.type || 'application/octet-stream';
 
-  // 1. 创建分块上传
   const createRes = await apiFetch(
     `${API.file}?key=${encodeURIComponent(key)}&action=createMultipart`,
     {
@@ -1161,7 +1237,6 @@ async function uploadMultipart(item, key) {
   }
   const { uploadId } = await createRes.json();
 
-  // 2. 并发上传各分块
   const totalChunks = Math.ceil(item.size / CHUNK_SIZE);
   const parts = [];
   let uploadedBytes = 0;
@@ -1199,7 +1274,6 @@ async function uploadMultipart(item, key) {
     parts.push(...batchResults);
   }
 
-  // 3. 完成合并
   parts.sort((a, b) => a.partNumber - b.partNumber);
   const completeRes = await apiFetch(
     `${API.file}?key=${encodeURIComponent(key)}&action=completeMultipart`,

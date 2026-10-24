@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════════
-   style.css — R2 云盘 (Apple 现代精致微质感设计系统 · 纯净自适应版)
-   纯原生 CSS | 零外部依赖 | 移动端深度优化 | 永久可见操作列
+   style.css — R2 云盘 (Apple 现代精致微质感 · 复选框集中操作版)
+   纯原生 CSS | 零外部依赖 | 移动端无溢出 | 批量操作集成
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 /* ─── 1. 设计系统变量 ───────────────────────────────────────────────────────── */
@@ -128,7 +128,7 @@ input {
   to   { opacity: 1; }
 }
 
-/* 顶部半透明毛玻璃 Header (纯净文字版) */
+/* 顶部半透明毛玻璃 Header */
 .header {
   height: var(--header-height);
   background: var(--color-surface-translucent);
@@ -258,13 +258,13 @@ input {
   margin-right: 5px;
 }
 
-/* ─── 6. 工具栏 (自适应) ─────────────────────────────────────────────────────── */
+/* ─── 6. 工具栏 (集中操作区) ─────────────────────────────────────────────────── */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 14px;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -272,6 +272,7 @@ input {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .file-count {
@@ -284,7 +285,7 @@ input {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 16px;
+  padding: 8px 14px;
   border-radius: var(--radius-md);
   font-size: 13px;
   font-weight: 500;
@@ -293,8 +294,15 @@ input {
   user-select: none;
 }
 
-.btn:active {
+.btn:active:not(:disabled) {
   transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.35 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+  box-shadow: none !important;
 }
 
 .btn-primary {
@@ -303,7 +311,7 @@ input {
   box-shadow: 0 2px 6px rgba(0, 113, 227, 0.22);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--color-primary-hover);
 }
 
@@ -314,7 +322,7 @@ input {
   box-shadow: var(--shadow-subtle);
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   background: var(--color-surface-hover);
   border-color: var(--color-border-hover);
 }
@@ -324,7 +332,7 @@ input {
   color: var(--color-text-secondary);
 }
 
-.btn-ghost:hover {
+.btn-ghost:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.04);
   color: var(--color-text-primary);
 }
@@ -339,8 +347,8 @@ input {
   color: var(--color-danger);
 }
 
-.btn-danger-ghost:hover {
-  background: rgba(255, 59, 48, 0.15);
+.btn-danger-ghost:hover:not(:disabled) {
+  background: rgba(255, 59, 48, 0.16);
 }
 
 .btn-sm {
@@ -378,7 +386,7 @@ input {
   color: var(--color-text-primary);
 }
 
-/* ─── 8. 主列表容器 (纯白卡片 + 常驻操作按钮) ─────────────────────────────────── */
+/* ─── 8. 主列表容器 (纯白卡片 + 左侧勾选框) ─────────────────────────────────── */
 .list-container {
   background: var(--color-surface);
   border-radius: var(--radius-lg);
@@ -400,7 +408,7 @@ input {
 }
 
 .file-table th {
-  padding: 12px 18px;
+  padding: 12px 14px;
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-secondary);
@@ -413,10 +421,22 @@ input {
   color: var(--color-text-primary);
 }
 
-.file-table th.col-actions {
-  cursor: default;
-  text-align: right;
-  padding-right: 20px;
+.col-checkbox {
+  width: 44px;
+  text-align: center;
+  padding-left: 14px;
+  padding-right: 6px;
+  cursor: default !important;
+}
+
+/* 苹果风格复选框 */
+.custom-checkbox {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+  vertical-align: middle;
 }
 
 .sort-icon {
@@ -434,6 +454,7 @@ input {
 .file-table tbody tr {
   border-bottom: 1px solid var(--color-border);
   transition: background var(--spring-transition);
+  cursor: pointer;
 }
 
 .file-table tbody tr:last-child {
@@ -444,22 +465,24 @@ input {
   background: var(--color-surface-hover);
 }
 
+.file-table tbody tr.row-selected {
+  background: rgba(0, 113, 227, 0.05);
+}
+
 .file-table td {
-  padding: 12px 18px;
+  padding: 12px 14px;
   font-size: 13.5px;
   vertical-align: middle;
 }
 
-.col-size { width: 110px; color: var(--color-text-secondary); }
-.col-date { width: 160px; color: var(--color-text-secondary); }
-.col-actions { width: 130px; text-align: right; padding-right: 18px; }
+.col-size { width: 120px; color: var(--color-text-secondary); }
+.col-date { width: 170px; color: var(--color-text-secondary); }
 
-/* 文件项布局 */
+/* 文件名称单元格 */
 .file-name-cell {
   display: flex;
   align-items: center;
   gap: 12px;
-  cursor: pointer;
   min-width: 0;
 }
 
@@ -492,7 +515,7 @@ input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 480px;
+  max-width: 520px;
 }
 
 .file-name-text.folder {
@@ -504,50 +527,6 @@ input {
   font-size: 11.5px;
   color: var(--color-text-secondary);
   margin-top: 2px;
-}
-
-/* 核心修复：操作按钮常驻可见，绝不使用 opacity: 0 隐藏 */
-.action-group {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  justify-content: flex-end;
-  opacity: 1 !important; /* 永久可见 */
-}
-
-.action-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-secondary);
-  background: rgba(0, 0, 0, 0.025);
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  transition: all var(--spring-transition);
-  flex-shrink: 0;
-}
-
-.action-btn:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--color-text-primary);
-  border-color: rgba(0, 0, 0, 0.08);
-  transform: translateY(-1px);
-}
-
-.action-btn:active {
-  transform: scale(0.94);
-}
-
-.action-btn.delete {
-  color: #a1a1a6;
-}
-
-.action-btn.delete:hover {
-  background: var(--color-danger-tint);
-  color: var(--color-danger);
-  border-color: rgba(255, 59, 48, 0.2);
 }
 
 /* ─── 9. 网格卡片视图 ────────────────────────────────────────────────────────── */
@@ -581,6 +560,18 @@ input {
   box-shadow: var(--shadow-card);
 }
 
+.grid-item.card-selected {
+  border-color: var(--color-primary);
+  background: rgba(0, 113, 227, 0.04);
+}
+
+.grid-item-checkbox {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+}
+
 .grid-icon-box {
   width: 48px;
   height: 48px;
@@ -608,15 +599,6 @@ input {
   font-size: 11px;
   color: var(--color-text-secondary);
   margin-top: 4px;
-}
-
-.grid-item-actions {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: flex;
-  gap: 3px;
-  opacity: 1; /* 永久可见 */
 }
 
 /* ─── 10. 空目录 & 加载状态 ───────────────────────────────────────────────────── */
@@ -876,7 +858,7 @@ input {
   margin-bottom: 22px;
 }
 
-/* 输入框统一 16px 避免 iOS 强制缩放 */
+/* 输入框统一 16px */
 .input-group {
   position: relative;
   display: flex;
@@ -1033,13 +1015,12 @@ input {
 .toast.removing { animation: toastOut 0.2s ease forwards; }
 @keyframes toastOut { to { transform: translateY(8px); opacity: 0; } }
 
-/* ─── 15. 移动端自适应布局深度适配 (Media Queries) ─────────────────────────── */
+/* ─── 15. 移动端彻底优化 (两列自适应 · 零溢出 · 纯粹自然) ───────────────────── */
 @media (max-width: 768px) {
   .main {
     padding: 12px 14px 40px;
   }
 
-  /* 顶部 Header */
   .header {
     height: 52px;
     padding: 0 16px;
@@ -1048,22 +1029,22 @@ input {
     font-size: 16px;
   }
 
-  /* 工具栏手机端自适应排列：上传与新建文件夹平铺展示 */
+  /* 工具栏四键弹性平铺 */
   .toolbar {
     margin-bottom: 12px;
-    gap: 10px;
+    gap: 8px;
   }
 
   .toolbar-left {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     width: 100%;
     gap: 8px;
   }
 
   .toolbar-left .btn {
-    flex: 1;
-    padding: 9px 12px;
-    font-size: 13px;
+    padding: 9px 8px;
+    font-size: 12.5px;
     justify-content: center;
   }
 
@@ -1072,29 +1053,41 @@ input {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    margin-top: 2px;
   }
 
-  /* 表格隐藏多余的大小与日期列，集中展现文件名与常驻操作按钮 */
+  /* 移动端表格仅保留【复选框】和【名称/信息】两列，100% 贴合，绝无横向溢出 */
   .col-size, .col-date {
     display: none;
   }
 
-  .file-table th.col-name {
-    padding: 10px 14px;
+  .file-table {
+    table-layout: fixed;
+    width: 100%;
   }
-  .file-table th.col-actions {
-    padding: 10px 14px;
-    text-align: right;
+
+  .col-checkbox {
+    width: 42px;
+    padding-left: 10px;
+    padding-right: 4px;
+  }
+
+  .col-name {
+    width: auto;
+  }
+
+  .file-table th.col-name {
+    padding: 10px 10px;
   }
 
   .file-table td {
-    padding: 10px 14px;
+    padding: 10px 8px 10px 4px;
   }
 
-  /* 移动端卡片行布局 */
   .file-name-cell {
     gap: 10px;
-    max-width: 100%;
+    width: 100%;
+    min-width: 0;
   }
 
   .file-icon-box {
@@ -1102,29 +1095,20 @@ input {
     height: 34px;
   }
 
+  .file-name-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
   .file-name-text {
     font-size: 13.5px;
-    max-width: calc(100vw - 195px); /* 动态自适应屏幕宽度，绝不遮挡右侧按钮 */
+    max-width: 100%;
+    display: block;
   }
 
   .file-meta-sub {
-    display: block; /* 移动端显示大小 · 时间小字 */
-  }
-
-  /* 移动端操作按钮始终常驻可见，间距舒适，绝不被遮挡 */
-  .col-actions {
-    width: 110px;
-    padding-right: 12px;
-  }
-
-  .action-group {
-    display: inline-flex !important;
-    gap: 4px;
-  }
-
-  .action-btn {
-    width: 32px;
-    height: 32px;
+    display: block;
   }
 
   /* 预览全屏卡片 */
