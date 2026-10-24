@@ -19,6 +19,57 @@ function clearDirCache() {
   dirCache.clear();
 }
 
+// ─── 文本预览本地内存缓存 (同一会话内重复查看零网络开销) ──────────────────────────
+const textPreviewCache = new Map(); // key -> text content
+
+// ─── 本地状态乐观更新 (Optimistic UI Update: 彻底省去写后额外 list() 请求) ───────
+function optimisticRemoveItems(keys) {
+  const set = new Set(keys);
+  state.files = state.files.filter(f => !set.has(f.key));
+  state.folders = state.folders.filter(f => !set.has(f));
+  const cached = dirCache.get(state.currentPrefix);
+  if (cached) {
+    cached.files = cached.files.filter(f => !set.has(f.key));
+    cached.folders = cached.folders.filter(f => !set.has(f));
+  }
+  keys.forEach(k => textPreviewCache.delete(k));
+  state.selectedKeys.clear();
+  updateSelectionUI();
+  renderFileList();
+}
+
+function optimisticAddFolder(folderKey) {
+  if (!state.folders.includes(folderKey)) {
+    state.folders.push(folderKey);
+    state.folders.sort();
+  }
+  const cached = dirCache.get(state.currentPrefix);
+  if (cached && !cached.folders.includes(folderKey)) {
+    cached.folders.push(folderKey);
+    cached.folders.sort();
+  }
+  renderFileList();
+}
+
+function optimisticAddFile(key, size, mimeType) {
+  textPreviewCache.delete(key);
+  const newFile = {
+    key,
+    size,
+    uploaded: new Date().toISOString(),
+    httpMetadata: { contentType: mimeType || 'application/octet-stream' },
+    etag: null,
+  };
+  state.files = state.files.filter(f => f.key !== key);
+  state.files.push(newFile);
+  const cached = dirCache.get(state.currentPrefix);
+  if (cached) {
+    cached.files = cached.files.filter(f => f.key !== key);
+    cached.files.push(newFile);
+  }
+  renderFileList();
+}
+
 const API = {
   files: '/api/files',
   file:  '/api/file',
@@ -832,7 +883,14 @@ document.querySelectorAll('.file-table th[data-sort]').forEach(th => {
   });
 });
 
+let lastRefreshTime = 0;
 dom.btnRefresh.addEventListener('click', () => {
+  const now = Date.now();
+  if (now - lastRefreshTime < 1500) {
+    showToast('操作过于频繁，请稍候再刷新', 'warning');
+    return;
+  }
+  lastRefreshTime = now;
   clearDirCache();
   loadFiles(state.currentPrefix, true);
 });
@@ -870,8 +928,8 @@ dom.mkdirForm.addEventListener('submit', async e => {
     if (res.ok) {
       dom.mkdirModal.hidden = true;
       showToast('文件夹创建成功', 'success');
-      clearDirCache();
-      loadFiles(state.currentPrefix, true);
+      // 乐观更新：推入本地状态与缓存并重绘，省去 1 次 R2.list Class A 消耗！
+      optimisticAddFolder(key);
     } else {
       const data = await res.json().catch(() => ({}));
       dom.mkdirError.textContent = data.error || '创建失败';
@@ -927,6 +985,8 @@ dom.btnBatchDelete?.addEventListener('click', async () => {
     if (res.ok) {
       const data = await res.json().catch(() => ({}));
       showToast(`成功批量删除 ${data.deletedCount || keysToDelete.length} 个项目`, 'success');
+      // 乐观更新：从本地与缓存剔除被删项目，无需发起额外的 /api/files 请求！
+      optimisticRemoveItems(keysToDelete);
     } else {
       const err = await res.json().catch(() => ({}));
       showToast(err.error || '批量删除失败', 'error');
@@ -934,10 +994,6 @@ dom.btnBatchDelete?.addEventListener('click', async () => {
   } catch (err) {
     showToast('批量删除异常：' + err.message, 'error');
   }
-
-  state.selectedKeys.clear();
-  clearDirCache();
-  loadFiles(state.currentPrefix, true);
 });
 
 // ─── 文件下载工具 ──────────────────────────────────────────────────────────────
@@ -998,22 +1054,36 @@ async function openPreview(file) {
     dom.previewBody.appendChild(wrap);
 
   } else if (type === 'text' || type === 'code') {
-    dom.previewBody.innerHTML = '<div style="color:#86868b;padding:24px">正在加载文本内容...</div>';
-    try {
-      const res = await apiFetch(mediaUrl);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
+    // 优先命中本地内存缓存，0 网络请求
+    if (textPreviewCache.has(file.key)) {
       const wrap = document.createElement('div');
       wrap.className = 'preview-text-wrap';
       const pre = document.createElement('pre');
       const code = document.createElement('code');
-      code.textContent = text;
+      code.textContent = textPreviewCache.get(file.key);
       pre.appendChild(code);
       wrap.appendChild(pre);
       dom.previewBody.innerHTML = '';
       dom.previewBody.appendChild(wrap);
-    } catch (err) {
-      dom.previewBody.innerHTML = `<div style="color:#ff3b30;padding:24px">加载失败：${escapeHtml(err.message)}</div>`;
+    } else {
+      dom.previewBody.innerHTML = '<div style="color:#86868b;padding:24px">正在加载文本内容...</div>';
+      try {
+        const res = await apiFetch(mediaUrl);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        textPreviewCache.set(file.key, text);
+        const wrap = document.createElement('div');
+        wrap.className = 'preview-text-wrap';
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        code.textContent = text;
+        pre.appendChild(code);
+        wrap.appendChild(pre);
+        dom.previewBody.innerHTML = '';
+        dom.previewBody.appendChild(wrap);
+      } catch (err) {
+        dom.previewBody.innerHTML = `<div style="color:#ff3b30;padding:24px">加载失败：${escapeHtml(err.message)}</div>`;
+      }
     }
 
   } else if (type === 'pdf') {
@@ -1066,8 +1136,8 @@ dom.btnPreviewDel.addEventListener('click', async () => {
     if (res.ok) {
       showToast('文件已彻底删除', 'success');
       closePreview();
-      clearDirCache();
-      loadFiles(state.currentPrefix, true);
+      // 乐观更新：本地移除已删文件，无需触发额外的 /api/files 请求
+      optimisticRemoveItems([key]);
     } else {
       const data = await res.json().catch(() => ({}));
       showToast(data.error || '删除失败', 'error');
@@ -1224,8 +1294,8 @@ async function uploadFile(item) {
     item.status = 'done';
     item.progress = 100;
     showToast(`${item.name} 上传成功`, 'success');
-    clearDirCache();
-    loadFiles(state.currentPrefix, true);
+    // 乐观更新：将新上传的文件直接合入本地列表与缓存，免去额外的 /api/files 列表请求！
+    optimisticAddFile(key, item.size, item.file.type);
   } catch (err) {
     item.status = 'error';
     item.error = err.message;

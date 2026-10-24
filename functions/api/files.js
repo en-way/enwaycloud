@@ -25,7 +25,7 @@ export async function onRequestGet(context) {
     const url = new URL(request.url);
     const prefix = url.searchParams.get('prefix') || '';
     const cursor = url.searchParams.get('cursor') || undefined;
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10), 1000);
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '1000', 10), 1000);
 
     // 列出 R2 对象，使用 delimiter 归纳子目录
     const listed = await env.R2_BUCKET.list({
@@ -80,6 +80,9 @@ export async function onRequestGet(context) {
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    },
   });
 }

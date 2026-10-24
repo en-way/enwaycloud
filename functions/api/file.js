@@ -78,6 +78,22 @@ function jsonResponse(data, status = 200) {
 }
 
 /**
+ * 清除 Cloudflare Edge 边缘缓存 (去除 auth 参数，精确匹配缓存 key)
+ * @param {string} requestUrl
+ * @param {string} key
+ */
+function purgeEdgeCache(requestUrl, key) {
+  if (typeof caches === 'undefined') return;
+  try {
+    const cache = caches.default;
+    const fileUrl = new URL(requestUrl);
+    fileUrl.pathname = '/api/file';
+    fileUrl.search = `?key=${encodeURIComponent(key)}`;
+    cache.delete(new Request(fileUrl.toString(), { method: 'GET' })).catch(() => {});
+  } catch (_) {}
+}
+
+/**
  * GET /api/file?key=xxx[&download=1][&auth=xxx]
  * 获取/预览/下载文件 (集成 Range 单次精确读取、ETag 304 协商缓存、Cloudflare Edge 边缘缓存)
  */
@@ -90,10 +106,12 @@ async function handleGet(request, env, context) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
   }
 
-  // 1. 边缘缓存检查 (针对非 Range、非强制下载的静态预览)
+  // 1. 规范化边缘缓存检查：剥离 ?auth=，让所有已鉴权请求共享同一 Cache Key
   const rangeHeader = request.headers.get('Range');
   const cache = typeof caches !== 'undefined' ? caches.default : null;
-  const cacheKey = new Request(url.toString(), {
+  const cacheUrl = new URL(request.url);
+  cacheUrl.searchParams.delete('auth');
+  const cacheKey = new Request(cacheUrl.toString(), {
     method: 'GET',
     headers: request.headers,
   });
@@ -108,57 +126,37 @@ async function handleGet(request, env, context) {
   }
 
   try {
-    // 2. 解析 Range 头（精确单次读取，彻底消除原双重 get() 导致的 Class B 双倍扣减）
-    let getOptions = undefined;
-    if (rangeHeader) {
-      const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-      if (match) {
-        const startStr = match[1];
-        const endStr = match[2];
-        if (startStr || endStr) {
-          const start = startStr ? parseInt(startStr, 10) : undefined;
-          const end = endStr ? parseInt(endStr, 10) : undefined;
-          if (start !== undefined && end !== undefined) {
-            getOptions = { range: { offset: start, length: end - start + 1 } };
-          } else if (start !== undefined) {
-            getOptions = { range: { offset: start } };
-          } else if (end !== undefined) {
-            getOptions = { range: { suffix: end } };
-          }
-        }
-      }
-    }
+    // 2. 原生透传 range 与 onlyIf 头（精确单次读取与 304 原生判定）
+    const object = await env.R2_BUCKET.get(key, {
+      range: request.headers,
+      onlyIf: request.headers,
+    });
 
-    // 仅执行 1 次精确读取
-    const object = await env.R2_BUCKET.get(key, getOptions);
     if (!object) {
       return jsonResponse({ error: '文件不存在', key }, 404);
     }
 
     const contentType = inferContentType(key, object.httpMetadata || {});
     const fileName = key.split('/').pop();
+    const etag = object.httpEtag || object.etag || '';
 
-    // 3. ETag 304 协商缓存判断（未修改直接返回 304 空响应，省去全量网络传输与流量）
-    const ifNoneMatch = request.headers.get('If-None-Match');
-    if (!rangeHeader && ifNoneMatch && object.etag) {
-      const cleanIfNoneMatch = ifNoneMatch.replace(/^W\//, '').replace(/"/g, '');
-      const cleanEtag = object.etag.replace(/^W\//, '').replace(/"/g, '');
-      if (cleanIfNoneMatch === cleanEtag) {
-        return new Response(null, {
-          status: 304,
-          headers: {
-            'ETag': object.etag,
-            'Cache-Control': 'public, max-age=14400, s-maxage=86400',
-            'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
-          },
-        });
-      }
+    // 3. 命中 HTTP 304 Not Modified: 当 onlyIf 前置条件满足（未修改）时，R2 返回无 body 的 R2Object
+    if (!object.body) {
+      return new Response(null, {
+        status: 304,
+        headers: {
+          'ETag': etag,
+          'Cache-Control': 'public, max-age=604800, immutable',
+          'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
+          'Accept-Ranges': 'bytes',
+        },
+      });
     }
 
     const headers = new Headers({
       'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=14400, s-maxage=86400',
-      'ETag': object.etag || '',
+      'Cache-Control': 'public, max-age=604800, immutable',
+      'ETag': etag,
       'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
       'Accept-Ranges': 'bytes',
     });
@@ -189,8 +187,8 @@ async function handleGet(request, env, context) {
     headers.set('Content-Length', object.size.toString());
     const response = new Response(object.body, { status: 200, headers });
 
-    // 异步写入 Cloudflare Edge 边缘缓存 (供后续请求毫秒级直出，0 R2 消耗)
-    if (cache && !rangeHeader && !forceDownload && context && typeof context.waitUntil === 'function') {
+    // 写入 Cloudflare 边缘缓存（仅针对状态码 200、非 Range、非下载且 < 50MB 的常规文件）
+    if (cache && !rangeHeader && !forceDownload && object.size < 50 * 1024 * 1024 && context && typeof context.waitUntil === 'function') {
       try {
         context.waitUntil(cache.put(cacheKey, response.clone()));
       } catch (_) {}
@@ -220,6 +218,7 @@ async function handlePut(request, env) {
     await env.R2_BUCKET.put(key, request.body, {
       httpMetadata: { contentType },
     });
+    purgeEdgeCache(request.url, key);
     return jsonResponse({ success: true, key, message: '上传成功' });
   } catch (err) {
     console.error('[file.js] PUT error:', err);
@@ -339,6 +338,7 @@ async function handleCompleteMultipart(request, env) {
 
     const multipartUpload = env.R2_BUCKET.resumeMultipartUpload(key, uploadId);
     const object = await multipartUpload.complete(parts);
+    purgeEdgeCache(request.url, key);
 
     return jsonResponse({
       success: true,
@@ -398,18 +398,7 @@ async function handleDelete(request, env) {
     }
 
     await env.R2_BUCKET.delete(key);
-
-    // 清理该文件的边缘缓存
-    if (typeof caches !== 'undefined') {
-      try {
-        const cache = caches.default;
-        const fileUrl = new URL(request.url);
-        fileUrl.pathname = '/api/file';
-        fileUrl.search = `?key=${encodeURIComponent(key)}`;
-        cache.delete(fileUrl.toString()).catch(() => {});
-      } catch (_) {}
-    }
-
+    purgeEdgeCache(request.url, key);
     return jsonResponse({ success: true, key, message: '删除成功' });
   } catch (err) {
     console.error('[file.js] DELETE error:', err);
@@ -444,17 +433,7 @@ async function handleBatchDelete(request, env) {
     await env.R2_BUCKET.delete(validKeys);
 
     // 异步清理边缘缓存
-    if (typeof caches !== 'undefined') {
-      try {
-        const cache = caches.default;
-        for (const k of validKeys) {
-          const fileUrl = new URL(request.url);
-          fileUrl.pathname = '/api/file';
-          fileUrl.search = `?key=${encodeURIComponent(k)}`;
-          cache.delete(fileUrl.toString()).catch(() => {});
-        }
-      } catch (_) {}
-    }
+    validKeys.forEach(k => purgeEdgeCache(request.url, k));
 
     return jsonResponse({
       success: true,
