@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="基于 Cloudflare R2 的轻量级个人网页云盘" />
+  <title>R2 云盘</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☁️</text></svg>" />
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════
+       登录弹窗 Modal
+  ═══════════════════════════════════════════════ -->
+  <div id="login-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <div class="modal-box login-box">
+      <div class="login-icon">☁️</div>
+      <h1 id="login-title" class="login-title">R2 云盘</h1>
+      <p class="login-subtitle">请输入访问密码</p>
+      <form id="login-form" autocomplete="off">
+        <div class="input-group">
+          <input
+            type="password"
+            id="password-input"
+            class="input"
+            placeholder="访问密码"
+            autocomplete="current-password"
+            required
+          />
+          <button type="button" id="toggle-password" class="btn-icon" aria-label="显示/隐藏密码" title="显示/隐藏密码">
+            <span id="eye-icon">👁️</span>
+          </button>
+        </div>
+        <p id="login-error" class="error-text" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block" id="login-btn">
+          <span id="login-btn-text">进入云盘</span>
+          <span id="login-spinner" class="spinner" hidden></span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       主应用界面
+  ═══════════════════════════════════════════════ -->
+  <div id="app" hidden>
+
+    <!-- 顶部导航栏 -->
+    <header class="header">
+      <div class="header-left">
+        <span class="header-logo">☁️</span>
+        <span class="header-title">R2 云盘</span>
+      </div>
+      <div class="header-right">
+        <button id="btn-view-list" class="btn-icon active" title="列表视图" aria-label="列表视图">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z"/>
+          </svg>
+        </button>
+        <button id="btn-view-grid" class="btn-icon" title="网格视图" aria-label="网格视图">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/>
+          </svg>
+        </button>
+        <button id="btn-logout" class="btn btn-ghost" title="退出登录">退出</button>
+      </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main class="main">
+
+      <!-- 面包屑导航 -->
+      <nav class="breadcrumb" id="breadcrumb" aria-label="目录路径">
+        <button class="breadcrumb-item root" data-prefix="">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:4px">
+            <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+          </svg>
+          根目录
+        </button>
+      </nav>
+
+      <!-- 工具栏 -->
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <button id="btn-upload" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:6px">
+              <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/>
+            </svg>
+            上传文件
+          </button>
+          <input type="file" id="file-input" multiple hidden aria-hidden="true" />
+          <button id="btn-mkdir" class="btn btn-secondary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:6px">
+              <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+            </svg>
+            新建文件夹
+          </button>
+        </div>
+        <div class="toolbar-right">
+          <span id="file-count" class="file-count"></span>
+          <button id="btn-refresh" class="btn-icon" title="刷新" aria-label="刷新列表">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- 拖拽上传遮罩层 -->
+      <div id="drop-overlay" class="drop-overlay" hidden aria-hidden="true">
+        <div class="drop-content">
+          <div class="drop-icon">📤</div>
+          <p>释放文件，开始上传到当前目录</p>
+        </div>
+      </div>
+
+      <!-- 上传任务队列面板 -->
+      <div id="upload-panel" class="upload-panel" hidden>
+        <div class="upload-panel-header">
+          <span class="upload-panel-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:6px">
+              <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/>
+            </svg>
+            上传队列
+          </span>
+          <div class="upload-panel-actions">
+            <button id="btn-clear-done" class="btn btn-ghost btn-sm">清除已完成</button>
+            <button id="btn-close-panel" class="btn-icon" aria-label="关闭面板">✕</button>
+          </div>
+        </div>
+        <div id="upload-list" class="upload-list"></div>
+      </div>
+
+      <!-- 文件列表区域 -->
+      <div id="list-container" class="list-container">
+        <!-- 列表视图 -->
+        <div id="file-list-view" class="file-list-view">
+          <table class="file-table" id="file-table">
+            <thead>
+              <tr>
+                <th class="col-name" data-sort="name">
+                  名称
+                  <span class="sort-icon">↕</span>
+                </th>
+                <th class="col-size" data-sort="size">
+                  大小
+                  <span class="sort-icon">↕</span>
+                </th>
+                <th class="col-date" data-sort="date">
+                  修改时间
+                  <span class="sort-icon">↕</span>
+                </th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="file-tbody"></tbody>
+          </table>
+
+          <!-- 空目录提示 -->
+          <div id="empty-hint" class="empty-hint" hidden>
+            <div class="empty-icon">📂</div>
+            <p class="empty-text">此目录为空</p>
+            <p class="empty-sub">将文件拖放到此处或点击"上传文件"按钮</p>
+          </div>
+        </div>
+
+        <!-- 网格视图 -->
+        <div id="file-grid-view" class="file-grid-view" hidden>
+          <div id="file-grid" class="file-grid"></div>
+          <div id="empty-hint-grid" class="empty-hint" hidden>
+            <div class="empty-icon">📂</div>
+            <p class="empty-text">此目录为空</p>
+            <p class="empty-sub">将文件拖放到此处或点击"上传文件"按钮</p>
+          </div>
+        </div>
+
+        <!-- 加载中 -->
+        <div id="loading-hint" class="loading-hint">
+          <div class="loading-spinner"></div>
+          <p>加载中...</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       文件预览 Modal
+  ═══════════════════════════════════════════════ -->
+  <div id="preview-modal" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-label="文件预览">
+    <div class="preview-container">
+
+      <!-- 预览头部 -->
+      <div class="preview-header">
+        <div class="preview-header-left">
+          <span id="preview-icon" class="preview-file-icon"></span>
+          <div class="preview-title-wrap">
+            <h2 id="preview-filename" class="preview-filename"></h2>
+            <span id="preview-meta" class="preview-meta"></span>
+          </div>
+        </div>
+        <div class="preview-header-right">
+          <button id="btn-preview-download" class="btn btn-secondary btn-sm">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:4px">
+              <path d="M5 20h14v-2H5v2zm7-18l-7 7h4v6h6v-6h4l-7-7z"/>
+            </svg>
+            下载
+          </button>
+          <button id="btn-preview-delete" class="btn btn-danger btn-sm">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:4px">
+              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+            </svg>
+            删除
+          </button>
+          <button id="btn-preview-close" class="btn-icon btn-icon-lg" aria-label="关闭预览">✕</button>
+        </div>
+      </div>
+
+      <!-- 预览内容区 -->
+      <div id="preview-body" class="preview-body">
+        <!-- 内容由 JS 动态注入 -->
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       新建文件夹 Modal
+  ═══════════════════════════════════════════════ -->
+  <div id="mkdir-modal" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="mkdir-title">
+    <div class="modal-box">
+      <h2 id="mkdir-title">新建文件夹</h2>
+      <form id="mkdir-form">
+        <div class="input-group" style="margin-top:16px">
+          <input
+            type="text"
+            id="mkdir-input"
+            class="input"
+            placeholder="文件夹名称"
+            maxlength="255"
+            pattern="[^/\\]+"
+            title="文件夹名称不能包含 / 或 \"
+            required
+          />
+        </div>
+        <p id="mkdir-error" class="error-text" hidden></p>
+        <div class="modal-actions">
+          <button type="button" id="btn-mkdir-cancel" class="btn btn-ghost">取消</button>
+          <button type="submit" class="btn btn-primary">创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       通用确认 Modal
+  ═══════════════════════════════════════════════ -->
+  <div id="confirm-modal" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-box">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="modal-actions">
+        <button id="btn-confirm-cancel" class="btn btn-ghost">取消</button>
+        <button id="btn-confirm-ok" class="btn btn-danger">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       Toast 通知
+  ═══════════════════════════════════════════════ -->
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

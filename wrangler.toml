@@ -1,0 +1,13 @@
+name = "enwaycloud"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "public"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "enwaycloud"
+preview_bucket_name = "enwaycloud"
+
+[vars]
+# 注意：DRIVE_PASSWORD 建议在 Cloudflare 控制台的 Environment Variables 中配置（加密存储）
+# 本地开发临时使用可在此处写入，生产环境请勿提交到代码仓库
+# DRIVE_PASSWORD = "your-secret-password"
