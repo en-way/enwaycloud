@@ -147,9 +147,6 @@ const dom = {
   btnRefresh:      $('btn-refresh'),
   fileCount:       $('file-count'),
 
-  btnFabUpload:    $('btn-fab-upload'),
-  btnFabMkdir:     $('btn-fab-mkdir'),
-
   dropOverlay:     $('drop-overlay'),
 
   uploadPanel:     $('upload-panel'),
@@ -771,7 +768,6 @@ function openMkdirModal() {
 }
 
 dom.btnMkdir.addEventListener('click', openMkdirModal);
-dom.btnFabMkdir?.addEventListener('click', openMkdirModal);
 
 dom.btnMkdirCancel.addEventListener('click', () => {
   dom.mkdirModal.hidden = true;
@@ -969,7 +965,6 @@ dom.btnPreviewDel.addEventListener('click', () => {
 
 // ─── 文件上传系统 ──────────────────────────────────────────────────────────────
 dom.btnUpload.addEventListener('click', () => dom.fileInput.click());
-dom.btnFabUpload?.addEventListener('click', () => dom.fileInput.click());
 
 dom.fileInput.addEventListener('change', e => {
   const files = Array.from(e.target.files || []);
