@@ -5,18 +5,87 @@
 
 'use strict';
 
-// ─── 常量与配置 (额度省流优化版) ────────────────────────────────────────────────
-const CHUNK_SIZE = 20 * 1024 * 1024;           // 20 MB 分块大小（减少 60% Class A 与 Functions 请求）
-const MULTIPART_THRESHOLD = 20 * 1024 * 1024;  // 超过 20MB 启用分块（<=20MB 走高效单次 PUT 直传，节省 66% 开销）
+// ─── 常量与配置 (R2 终极省流版：50MB 大分块与单文件直传) ─────────────────────────
+const CHUNK_SIZE = 50 * 1024 * 1024;           // 严格锁定 50 MB 分块大小
+const MULTIPART_THRESHOLD = 50 * 1024 * 1024;  // 严格锁定 50 MB 启用分块（<=50MB 走单次高效 PUT 直传）
 const MAX_CONCURRENT_CHUNKS = 3;               // 最大并发分块数
 const MAX_CONCURRENT_FILES = 3;                // 最大并发文件数
 
-// ─── 前端目录短期内存缓存 (SWR: 60 秒免重复请求，零 Class A / Functions 消耗) ────
-const dirCache = new Map(); // prefix -> { folders, files, timestamp }
-const DIR_CACHE_TTL = 60 * 1000; // 60 秒有效期
+const API = {
+  auth:  '/api/auth',
+  files: '/api/files',
+  file:  '/api/file',
+};
+
+// ─── sessionStorage 跨刷新目录持久化缓存 (10分钟保鲜) ──────────────────────────
+const DIR_CACHE_TTL = 10 * 60 * 1000; // 10 分钟有效期
+const STORAGE_CACHE_KEY = 'r2_drive_cache_v2';
+const inFlightRequests = new Map(); // key -> Promise
+
+function loadDirCacheFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_CACHE_KEY);
+    if (!raw) return new Map();
+    const data = JSON.parse(raw);
+    const map = new Map();
+    const now = Date.now();
+    for (const [k, v] of Object.entries(data)) {
+      if (now - v.timestamp < DIR_CACHE_TTL) {
+        map.set(k, v);
+      }
+    }
+    return map;
+  } catch (_) {
+    return new Map();
+  }
+}
+
+const dirCache = loadDirCacheFromStorage();
+
+function saveDirCacheToStorage() {
+  try {
+    const obj = Object.fromEntries(dirCache);
+    sessionStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(obj));
+  } catch (_) {}
+}
 
 function clearDirCache() {
   dirCache.clear();
+  try { sessionStorage.removeItem(STORAGE_CACHE_KEY); } catch (_) {}
+  state.allObjects = null;
+  state.isVirtualTree = false;
+}
+
+// ─── 全盘轻量虚拟树解析引擎 (Single-Pass Virtual Tree: 0 网络请求，0 Class A) ────
+function extractVirtualDir(prefix) {
+  if (!state.allObjects) return null;
+  const prefixLen = prefix.length;
+  const folderSet = new Set();
+  const files = [];
+
+  for (const obj of state.allObjects) {
+    if (!obj.key.startsWith(prefix)) continue;
+    if (obj.key === prefix) continue;
+
+    const rest = obj.key.slice(prefixLen);
+    const slashIndex = rest.indexOf('/');
+
+    if (slashIndex !== -1) {
+      // 提取直接子目录
+      const folderName = rest.slice(0, slashIndex + 1);
+      folderSet.add(prefix + folderName);
+    } else {
+      // 当前层级的文件（或非 0 字节目录占位符）
+      if (!obj.key.endsWith('/') || obj.size > 0) {
+        files.push(obj);
+      }
+    }
+  }
+
+  return {
+    folders: Array.from(folderSet).sort(),
+    files,
+  };
 }
 
 // ─── 文本预览本地内存缓存 (同一会话内重复查看零网络开销) ──────────────────────────
@@ -27,11 +96,19 @@ function optimisticRemoveItems(keys) {
   const set = new Set(keys);
   state.files = state.files.filter(f => !set.has(f.key));
   state.folders = state.folders.filter(f => !set.has(f));
-  const cached = dirCache.get(state.currentPrefix);
-  if (cached) {
+
+  // 1. 同步更新全盘虚拟树
+  if (state.allObjects) {
+    state.allObjects = state.allObjects.filter(o => !set.has(o.key));
+  }
+
+  // 2. 同步更新各目录 cache
+  for (const [pfx, cached] of dirCache.entries()) {
     cached.files = cached.files.filter(f => !set.has(f.key));
     cached.folders = cached.folders.filter(f => !set.has(f));
   }
+  saveDirCacheToStorage();
+
   keys.forEach(k => textPreviewCache.delete(k));
   state.selectedKeys.clear();
   updateSelectionUI();
@@ -39,15 +116,31 @@ function optimisticRemoveItems(keys) {
 }
 
 function optimisticAddFolder(folderKey) {
+  // 1. 同步推入全盘虚拟树（0 字节目录占位符）
+  if (state.allObjects) {
+    const exists = state.allObjects.some(o => o.key === folderKey);
+    if (!exists) {
+      state.allObjects.push({
+        key: folderKey,
+        size: 0,
+        uploaded: new Date().toISOString(),
+        httpMetadata: { contentType: 'application/x-directory' },
+        etag: null,
+      });
+    }
+  }
+
   if (!state.folders.includes(folderKey)) {
     state.folders.push(folderKey);
     state.folders.sort();
   }
+
   const cached = dirCache.get(state.currentPrefix);
   if (cached && !cached.folders.includes(folderKey)) {
     cached.folders.push(folderKey);
     cached.folders.sort();
   }
+  saveDirCacheToStorage();
   renderFileList();
 }
 
@@ -60,20 +153,25 @@ function optimisticAddFile(key, size, mimeType) {
     httpMetadata: { contentType: mimeType || 'application/octet-stream' },
     etag: null,
   };
+
+  // 1. 同步更新全盘虚拟树
+  if (state.allObjects) {
+    state.allObjects = state.allObjects.filter(o => o.key !== key);
+    state.allObjects.push(newFile);
+  }
+
+  // 2. 更新当前视图与缓存
   state.files = state.files.filter(f => f.key !== key);
   state.files.push(newFile);
+
   const cached = dirCache.get(state.currentPrefix);
   if (cached) {
     cached.files = cached.files.filter(f => f.key !== key);
     cached.files.push(newFile);
   }
+  saveDirCacheToStorage();
   renderFileList();
 }
-
-const API = {
-  files: '/api/files',
-  file:  '/api/file',
-};
 
 // 扩展名映射文件类型
 const EXT_TYPE_MAP = {
@@ -179,6 +277,8 @@ const state = {
   uploadQueue:   [],
   previewItem:   null,
   loading:       false,
+  allObjects:    null,       // 全盘虚拟树平铺对象数组
+  isVirtualTree: false,      // 是否启用了全盘虚拟树模式 (整盘 1 次 Class A 搞定)
 };
 
 // ─── DOM 缓存 ──────────────────────────────────────────────────────────────────
@@ -361,13 +461,13 @@ function showConfirm(title, message) {
   });
 }
 
-// ─── 鉴权与首屏流 ──────────────────────────────────────────────────────────────
+// ─── 鉴权与首屏流 (纯轻量免 R2 校验，0 Class A 消耗) ───────────────────────────
 async function tryAuth(password) {
   try {
-    const res = await apiFetch(`${API.files}?prefix=`, {
+    const res = await apiFetch(API.auth, {
       headers: { 'X-Drive-Password': password },
     });
-    return res.status !== 401;
+    return res.status === 200;
   } catch (err) {
     return false;
   }
@@ -463,7 +563,7 @@ dom.btnLogout.addEventListener('click', () => {
   showLogin();
 });
 
-// ─── 文件数据加载 (集成前端 SWR 内存缓存) ──────────────────────────────────────────
+// ─── 文件数据加载 (全盘轻量虚拟树 + sessionStorage 持久化 + 请求合并) ─────────────
 async function loadFiles(prefix = '', forceRefresh = false) {
   state.loading = true;
   state.currentPrefix = prefix;
@@ -471,7 +571,20 @@ async function loadFiles(prefix = '', forceRefresh = false) {
   updateSelectionUI();
   renderBreadcrumb(prefix);
 
-  // 1. 命中短期内存缓存：直接同步秒开，零网络延迟与零额度消耗
+  // 1. 全盘轻量虚拟树引擎：若已索引整盘且非强制刷新，直接在内存切分目录，0 网络请求，0 Class A！
+  if (!forceRefresh && state.isVirtualTree && state.allObjects) {
+    const vData = extractVirtualDir(prefix);
+    if (vData) {
+      state.folders = vData.folders;
+      state.files = vData.files;
+      renderFileList();
+      state.loading = false;
+      setLoading(false);
+      return;
+    }
+  }
+
+  // 2. 检查 sessionStorage / 内存缓存 (10 分钟保鲜)
   const cached = dirCache.get(prefix);
   if (!forceRefresh && cached && (Date.now() - cached.timestamp < DIR_CACHE_TTL)) {
     state.folders = cached.folders || [];
@@ -484,35 +597,71 @@ async function loadFiles(prefix = '', forceRefresh = false) {
 
   setLoading(true);
 
-  try {
-    const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`);
-    if (res.status === 401) {
-      showLogin();
-      return;
-    }
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      showToast(data.error || '获取文件列表失败', 'error');
-      return;
-    }
-    const data = await res.json();
-    state.folders = data.folders || [];
-    state.files = data.files || [];
+  // 3. 构建请求 URL：整盘首次加载或根目录强制刷新时优先扫描 ?all=1
+  const shouldTryAll = (prefix === '' && (!state.isVirtualTree || forceRefresh));
+  const reqUrl = shouldTryAll
+    ? `${API.files}?all=1${forceRefresh ? '&refresh=1' : ''}`
+    : `${API.files}?prefix=${encodeURIComponent(prefix)}${forceRefresh ? '&refresh=1' : ''}`;
 
-    // 写入内存缓存
-    dirCache.set(prefix, {
-      folders: state.folders,
-      files: state.files,
-      timestamp: Date.now(),
-    });
-
-    renderFileList();
-  } catch (err) {
-    showToast('网络错误：' + err.message, 'error');
-  } finally {
+  // 并发请求合并（In-flight Request Deduplication）
+  const inFlightKey = reqUrl;
+  if (inFlightRequests.has(inFlightKey)) {
+    try {
+      await inFlightRequests.get(inFlightKey);
+    } catch (_) {}
     state.loading = false;
     setLoading(false);
+    return;
   }
+
+  const fetchPromise = (async () => {
+    try {
+      const res = await apiFetch(reqUrl);
+      if (res.status === 401) {
+        showLogin();
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || '获取文件列表失败', 'error');
+        return;
+      }
+      const data = await res.json();
+
+      if (data.all) {
+        // 成功载入全盘索引
+        state.allObjects = data.objects || [];
+        state.isVirtualTree = !data.truncated; // 如果 <= 1000 个文件，开启全盘虚拟树
+
+        const vData = extractVirtualDir(prefix);
+        state.folders = vData ? vData.folders : [];
+        state.files = vData ? vData.files : [];
+      } else {
+        // 单目录按需降级模式
+        state.folders = data.folders || [];
+        state.files = data.files || [];
+      }
+
+      // 写入持久化缓存
+      dirCache.set(prefix, {
+        folders: state.folders,
+        files: state.files,
+        timestamp: Date.now(),
+      });
+      saveDirCacheToStorage();
+
+      renderFileList();
+    } catch (err) {
+      showToast('网络错误：' + err.message, 'error');
+    } finally {
+      inFlightRequests.delete(inFlightKey);
+      state.loading = false;
+      setLoading(false);
+    }
+  })();
+
+  inFlightRequests.set(inFlightKey, fetchPromise);
+  await fetchPromise;
 }
 
 function setLoading(loading) {

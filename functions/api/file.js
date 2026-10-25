@@ -78,7 +78,7 @@ function jsonResponse(data, status = 200) {
 }
 
 /**
- * 清除 Cloudflare Edge 边缘缓存 (去除 auth 参数，精确匹配缓存 key)
+ * 清除 Cloudflare Edge 边缘缓存 (去除 auth 参数，同步清理单文件与关联目录列表缓存)
  * @param {string} requestUrl
  * @param {string} key
  */
@@ -86,10 +86,21 @@ function purgeEdgeCache(requestUrl, key) {
   if (typeof caches === 'undefined') return;
   try {
     const cache = caches.default;
+    // 1. 清理单文件响应缓存
     const fileUrl = new URL(requestUrl);
     fileUrl.pathname = '/api/file';
     fileUrl.search = `?key=${encodeURIComponent(key)}`;
     cache.delete(new Request(fileUrl.toString(), { method: 'GET' })).catch(() => {});
+
+    // 2. 清理受影响的 /api/files 目录缓存与 ?all=1 全盘缓存
+    const dirUrl = new URL(requestUrl);
+    dirUrl.pathname = '/api/files';
+    dirUrl.search = '?all=1';
+    cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
+
+    const prefix = key.includes('/') ? key.substring(0, key.lastIndexOf('/') + 1) : '';
+    dirUrl.search = `?prefix=${encodeURIComponent(prefix)}`;
+    cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
   } catch (_) {}
 }
 

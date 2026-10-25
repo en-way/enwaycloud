@@ -1,16 +1,10 @@
 /**
  * functions/api/files.js
- * 处理文件目录列表查询
+ * 处理文件目录列表查询 (集成全盘虚拟树单次扫描与 Cloudflare Edge 目录缓存)
  *
  * GET /api/files?prefix=folder/&cursor=xxx
- *
- * 返回格式：
- * {
- *   folders: string[],          // 子文件夹路径数组（来自 delimitedPrefixes）
- *   files: FileObject[],        // 文件对象数组（过滤掉 0 字节占位对象）
- *   truncated: boolean,         // 是否还有更多结果
- *   cursor: string | null,      // 下一页游标
- * }
+ * GET /api/files?all=1              // 全盘轻量虚拟树索引扫描 (整盘仅消耗 1 次 Class A)
+ * GET /api/files?refresh=1          // 强制穿透 Edge 缓存并刷新
  */
 
 export async function onRequestGet(context) {
@@ -23,11 +17,64 @@ export async function onRequestGet(context) {
     }
 
     const url = new URL(request.url);
+    const isAll = url.searchParams.get('all') === '1';
+    const isRefresh = url.searchParams.get('refresh') === '1';
     const prefix = url.searchParams.get('prefix') || '';
     const cursor = url.searchParams.get('cursor') || undefined;
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '1000', 10), 1000);
 
-    // 列出 R2 对象，使用 delimiter 归纳子目录
+    // 1. Cloudflare Edge CDN 目录缓存检查 (剥离 auth 与 refresh，共享 CDN 缓存)
+    const cache = typeof caches !== 'undefined' ? caches.default : null;
+    const cacheUrl = new URL(request.url);
+    cacheUrl.searchParams.delete('auth');
+    cacheUrl.searchParams.delete('refresh');
+    const cacheKey = new Request(cacheUrl.toString(), {
+      method: 'GET',
+      headers: request.headers,
+    });
+
+    if (cache && !isRefresh) {
+      try {
+        const cachedResponse = await cache.match(cacheKey);
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+      } catch (_) {}
+    }
+
+    // 2. 策略一：全盘虚拟树扫描模式 (?all=1)
+    if (isAll) {
+      // 不传 delimiter，单次拉取整盘前 1000 个对象
+      const listed = await env.R2_BUCKET.list({
+        cursor: cursor,
+        limit: 1000,
+      });
+
+      const objects = (listed.objects || []).map(obj => ({
+        key: obj.key,
+        size: obj.size,
+        uploaded: obj.uploaded ? obj.uploaded.toISOString() : null,
+        httpMetadata: obj.httpMetadata || {},
+        etag: obj.etag || null,
+      }));
+
+      const resData = {
+        all: true,
+        objects,
+        truncated: listed.truncated || false,
+        cursor: listed.truncated ? (listed.cursor || null) : null,
+      };
+
+      const response = jsonResponse(resData, 200, true);
+      if (cache && context && typeof context.waitUntil === 'function') {
+        try {
+          context.waitUntil(cache.put(cacheKey, response.clone()));
+        } catch (_) {}
+      }
+      return response;
+    }
+
+    // 3. 策略二：按需单目录查询模式 (带 delimiter)
     const listed = await env.R2_BUCKET.list({
       prefix: prefix,
       delimiter: '/',
@@ -38,12 +85,10 @@ export async function onRequestGet(context) {
     // 提取子文件夹（delimitedPrefixes）
     const folders = (listed.delimitedPrefixes || []);
 
-    // 提取文件列表，过滤掉 0 字节目录占位符（key 以 / 结尾的对象）
+    // 提取文件列表，过滤掉 0 字节目录占位符
     const files = (listed.objects || [])
       .filter(obj => {
-        // 过滤掉与 prefix 同名的 0 字节目录占位对象
         if (obj.key === prefix) return false;
-        // 过滤掉以 / 结尾的占位对象
         if (obj.key.endsWith('/') && obj.size === 0) return false;
         return true;
       })
@@ -55,13 +100,21 @@ export async function onRequestGet(context) {
         etag: obj.etag || null,
       }));
 
-    return jsonResponse({
+    const resData = {
       folders,
       files,
       truncated: listed.truncated || false,
       cursor: listed.truncated ? (listed.cursor || null) : null,
       prefix,
-    });
+    };
+
+    const response = jsonResponse(resData, 200, true);
+    if (cache && context && typeof context.waitUntil === 'function') {
+      try {
+        context.waitUntil(cache.put(cacheKey, response.clone()));
+      } catch (_) {}
+    }
+    return response;
   } catch (err) {
     console.error('[files.js] Error:', err);
     return jsonResponse(
@@ -72,17 +125,19 @@ export async function onRequestGet(context) {
 }
 
 /**
- * 构造 JSON 响应
+ * 构造 JSON 响应 (支持 Edge 缓存头与浏览器不缓存)
  * @param {object} data
  * @param {number} status
+ * @param {boolean} cacheable
  * @returns {Response}
  */
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, cacheable = false) {
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': cacheable ? 'private, no-cache, s-maxage=300' : 'no-store',
+  };
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store',
-    },
+    headers,
   });
 }
