@@ -94,18 +94,30 @@ const textPreviewCache = new Map(); // key -> text content
 // ─── 本地状态乐观更新 (Optimistic UI Update: 彻底省去写后额外 list() 请求) ───────
 function optimisticRemoveItems(keys) {
   const set = new Set(keys);
-  state.files = state.files.filter(f => !set.has(f.key));
-  state.folders = state.folders.filter(f => !set.has(f));
+  const isRemoved = k => {
+    if (set.has(k)) return true;
+    for (const item of keys) {
+      if (item.endsWith('/') && k.startsWith(item)) return true;
+    }
+    return false;
+  };
+
+  state.files = state.files.filter(f => !isRemoved(f.key));
+  state.folders = state.folders.filter(f => !isRemoved(f));
 
   // 1. 同步更新全盘虚拟树
   if (state.allObjects) {
-    state.allObjects = state.allObjects.filter(o => !set.has(o.key));
+    state.allObjects = state.allObjects.filter(o => !isRemoved(o.key));
   }
 
-  // 2. 同步更新各目录 cache
+  // 2. 同步更新各目录 cache (前缀级联清除)
   for (const [pfx, cached] of dirCache.entries()) {
-    cached.files = cached.files.filter(f => !set.has(f.key));
-    cached.folders = cached.folders.filter(f => !set.has(f));
+    if (isRemoved(pfx)) {
+      dirCache.delete(pfx);
+    } else {
+      cached.files = cached.files.filter(f => !isRemoved(f.key));
+      cached.folders = cached.folders.filter(f => !isRemoved(f));
+    }
   }
   saveDirCacheToStorage();
 
@@ -197,9 +209,6 @@ const EXT_TYPE_MAP = {
   // 压缩
   zip:'zip', tar:'zip', gz:'zip', '7z':'zip', rar:'zip', bz2:'zip',
 };
-
-// 支持直接在线预览的文件类型
-const PREVIEW_TYPES = new Set(['image', 'video', 'audio', 'text', 'code', 'pdf']);
 
 // ─── SVG 矢量图标引擎 ──────────────────────────────────────────────────────────
 function renderSvgIcon(type, size = 20) {
@@ -318,10 +327,8 @@ const dom = {
   btnClearDone:       $('btn-clear-done'),
   btnClosePanel:      $('btn-close-panel'),
 
-  listContainer:      $('list-container'),
   fileListView:       $('file-list-view'),
   fileGridView:       $('file-grid-view'),
-  fileTable:          $('file-table'),
   selectAllCheckbox:  $('select-all-checkbox'),
   fileTbody:          $('file-tbody'),
   fileGrid:           $('file-grid'),
@@ -1570,7 +1577,7 @@ document.addEventListener('keydown', e => {
     if (!dom.mkdirModal.hidden)   { dom.mkdirModal.hidden = true; return; }
     if (!dom.confirmModal.hidden) { dom.confirmModal.hidden = true; return; }
   }
-  if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
+  if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r' && !e.shiftKey)) {
     if (!dom.app.hidden) {
       e.preventDefault();
       clearDirCache();

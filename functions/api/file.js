@@ -68,6 +68,20 @@ function inferContentType(key, httpMetadata = {}) {
 }
 
 /**
+ * 规范化并清洗文件 Key (防止目录穿越与多重斜杠)
+ * @param {string} key
+ * @returns {string}
+ */
+function sanitizeKey(key) {
+  if (!key || typeof key !== 'string') return '';
+  let cleaned = key.trim().replace(/^\/+/, '').replace(/\/+/g, '/');
+  if (cleaned.includes('..')) {
+    cleaned = cleaned.split('/').filter(p => p !== '..' && p !== '.').join('/');
+  }
+  return cleaned;
+}
+
+/**
  * 构造 JSON 响应
  */
 function jsonResponse(data, status = 200) {
@@ -99,8 +113,12 @@ function purgeEdgeCache(requestUrl, key) {
     cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
 
     const prefix = key.includes('/') ? key.substring(0, key.lastIndexOf('/') + 1) : '';
-    dirUrl.search = `?prefix=${encodeURIComponent(prefix)}`;
+    dirUrl.search = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
     cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
+    if (!prefix) {
+      dirUrl.search = '?prefix=';
+      cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
+    }
   } catch (_) {}
 }
 
@@ -110,7 +128,7 @@ function purgeEdgeCache(requestUrl, key) {
  */
 async function handleGet(request, env, context) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
   const forceDownload = url.searchParams.get('download') === '1';
 
   if (!key) {
@@ -124,7 +142,6 @@ async function handleGet(request, env, context) {
   cacheUrl.searchParams.delete('auth');
   const cacheKey = new Request(cacheUrl.toString(), {
     method: 'GET',
-    headers: request.headers,
   });
 
   if (cache && !rangeHeader && !forceDownload) {
@@ -218,7 +235,7 @@ async function handleGet(request, env, context) {
  */
 async function handlePut(request, env) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
 
   if (!key) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
@@ -243,7 +260,7 @@ async function handlePut(request, env) {
  */
 async function handleMkdir(request, env) {
   const url = new URL(request.url);
-  let key = url.searchParams.get('key');
+  let key = sanitizeKey(url.searchParams.get('key'));
 
   if (!key) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
@@ -258,6 +275,7 @@ async function handleMkdir(request, env) {
     await env.R2_BUCKET.put(key, new Uint8Array(0), {
       httpMetadata: { contentType: 'application/x-directory' },
     });
+    purgeEdgeCache(request.url, key);
     return jsonResponse({ success: true, key, message: '文件夹创建成功' });
   } catch (err) {
     console.error('[file.js] mkdir error:', err);
@@ -271,7 +289,7 @@ async function handleMkdir(request, env) {
  */
 async function handleCreateMultipart(request, env) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
 
   if (!key) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
@@ -303,7 +321,7 @@ async function handleCreateMultipart(request, env) {
  */
 async function handleUploadPart(request, env) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
   const uploadId = url.searchParams.get('uploadId');
   const partNumber = parseInt(url.searchParams.get('partNumber') || '0', 10);
 
@@ -333,7 +351,7 @@ async function handleUploadPart(request, env) {
  */
 async function handleCompleteMultipart(request, env) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
 
   if (!key) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
@@ -369,7 +387,7 @@ async function handleCompleteMultipart(request, env) {
  */
 async function handleAbortMultipart(request, env) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
   const uploadId = url.searchParams.get('uploadId');
 
   if (!key || !uploadId) {
@@ -392,7 +410,7 @@ async function handleAbortMultipart(request, env) {
  */
 async function handleDelete(request, env) {
   const url = new URL(request.url);
-  const key = url.searchParams.get('key');
+  const key = sanitizeKey(url.searchParams.get('key'));
 
   if (!key) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
@@ -433,11 +451,23 @@ async function handleBatchDelete(request, env) {
 
     // 安全限制：单次批量最多删除 500 个项目（R2 原生批量上限为 1000）
     const validKeys = keys
-      .filter(k => typeof k === 'string' && k.trim().length > 0)
+      .map(sanitizeKey)
+      .filter(k => k.length > 0)
       .slice(0, 500);
 
     if (validKeys.length === 0) {
       return jsonResponse({ error: 'keys 列表中无有效项' }, 400);
+    }
+
+    // 若包含文件夹，检查该文件夹是否为空（或其子项是否已被包含在本次批量删除列表中）
+    const folderKeys = validKeys.filter(k => k.endsWith('/'));
+    for (const fKey of folderKeys) {
+      const listed = await env.R2_BUCKET.list({ prefix: fKey, limit: 10 });
+      const hasOtherFiles = (listed.objects || []).some(o => o.key !== fKey && !validKeys.includes(o.key)) ||
+                            (listed.delimitedPrefixes || []).length > 0;
+      if (hasOtherFiles) {
+        return jsonResponse({ error: `文件夹 "${fKey}" 内部还有未选中的文件，无法直接删除` }, 409);
+      }
     }
 
     // R2 原生批量原子删除：delete(keys: string[])，仅计为 1 次原子操作且免费

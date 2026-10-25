@@ -81,7 +81,8 @@ export async function onRequest(context) {
  * @returns {Response}
  */
 function addCorsHeaders(response) {
-  const newResponse = new Response(response.body, response);
+  const isNoBodyStatus = [204, 205, 304].includes(response.status);
+  const newResponse = new Response(isNoBodyStatus ? null : response.body, response);
   Object.entries(CORS_HEADERS).forEach(([key, value]) => {
     newResponse.headers.set(key, value);
   });

@@ -19,7 +19,10 @@ export async function onRequestGet(context) {
     const url = new URL(request.url);
     const isAll = url.searchParams.get('all') === '1';
     const isRefresh = url.searchParams.get('refresh') === '1';
-    const prefix = url.searchParams.get('prefix') || '';
+    let prefix = (url.searchParams.get('prefix') || '').trim();
+    if (prefix && !prefix.endsWith('/')) {
+      prefix = prefix + '/';
+    }
     const cursor = url.searchParams.get('cursor') || undefined;
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '1000', 10), 1000);
 
@@ -30,7 +33,6 @@ export async function onRequestGet(context) {
     cacheUrl.searchParams.delete('refresh');
     const cacheKey = new Request(cacheUrl.toString(), {
       method: 'GET',
-      headers: request.headers,
     });
 
     if (cache && !isRefresh) {
