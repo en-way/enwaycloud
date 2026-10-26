@@ -362,7 +362,7 @@ const dom = {
 
 // ─── 基础工具函数 ──────────────────────────────────────────────────────────────
 function formatSize(bytes) {
-  if (bytes == null) return '—';
+  if (bytes == null || bytes < 0) return '—';
   if (bytes === 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
@@ -563,6 +563,8 @@ dom.togglePassword.addEventListener('click', () => {
 dom.btnLogout.addEventListener('click', () => {
   state.password = '';
   localStorage.removeItem('drive_password');
+  clearDirCache();
+  textPreviewCache.clear();
   state.currentPrefix = '';
   state.files = [];
   state.folders = [];
@@ -625,6 +627,10 @@ async function loadFiles(prefix = '', forceRefresh = false) {
     try {
       const res = await apiFetch(reqUrl);
       if (res.status === 401) {
+        state.password = '';
+        localStorage.removeItem('drive_password');
+        clearDirCache();
+        textPreviewCache.clear();
         showLogin();
         return;
       }
@@ -1501,59 +1507,64 @@ async function uploadMultipart(item, key) {
   }
   const { uploadId } = await createRes.json();
 
-  const totalChunks = Math.ceil(item.size / CHUNK_SIZE);
-  const parts = [];
-  let uploadedBytes = 0;
+  try {
+    const totalChunks = Math.ceil(item.size / CHUNK_SIZE);
+    const parts = [];
+    let uploadedBytes = 0;
 
-  for (let batchStart = 0; batchStart < totalChunks; batchStart += MAX_CONCURRENT_CHUNKS) {
-    const batchEnd = Math.min(batchStart + MAX_CONCURRENT_CHUNKS, totalChunks);
-    const batchPromises = [];
+    for (let batchStart = 0; batchStart < totalChunks; batchStart += MAX_CONCURRENT_CHUNKS) {
+      const batchEnd = Math.min(batchStart + MAX_CONCURRENT_CHUNKS, totalChunks);
+      const batchPromises = [];
 
-    for (let i = batchStart; i < batchEnd; i++) {
-      const partNumber = i + 1;
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, item.size);
-      const chunk = item.file.slice(start, end);
+      for (let i = batchStart; i < batchEnd; i++) {
+        const partNumber = i + 1;
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, item.size);
+        const chunk = item.file.slice(start, end);
 
-      batchPromises.push(
-        (async () => {
-          const res = await apiFetch(
-            `${API.file}?key=${encodeURIComponent(key)}&action=uploadPart&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
-            { method: 'PUT', body: chunk }
-          );
-          if (!res.ok) {
-            const d = await res.json().catch(() => ({}));
-            throw new Error(d.error || `第 ${partNumber} 块上传失败`);
-          }
-          const data = await res.json();
-          uploadedBytes += (end - start);
-          item.progress = (uploadedBytes / item.size) * 100;
-          updateUploadItemUI(item);
-          return { partNumber, etag: data.etag };
-        })()
-      );
+        batchPromises.push(
+          (async () => {
+            const res = await apiFetch(
+              `${API.file}?key=${encodeURIComponent(key)}&action=uploadPart&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
+              { method: 'PUT', body: chunk }
+            );
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              throw new Error(d.error || `第 ${partNumber} 块上传失败`);
+            }
+            const data = await res.json();
+            uploadedBytes += (end - start);
+            item.progress = (uploadedBytes / item.size) * 100;
+            updateUploadItemUI(item);
+            return { partNumber, etag: data.etag };
+          })()
+        );
+      }
+
+      const batchResults = await Promise.all(batchPromises);
+      parts.push(...batchResults);
     }
 
-    const batchResults = await Promise.all(batchPromises);
-    parts.push(...batchResults);
-  }
-
-  parts.sort((a, b) => a.partNumber - b.partNumber);
-  const completeRes = await apiFetch(
-    `${API.file}?key=${encodeURIComponent(key)}&action=completeMultipart`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId, parts }),
+    parts.sort((a, b) => a.partNumber - b.partNumber);
+    const completeRes = await apiFetch(
+      `${API.file}?key=${encodeURIComponent(key)}&action=completeMultipart`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId, parts }),
+      }
+    );
+    if (!completeRes.ok) {
+      const d = await completeRes.json().catch(() => ({}));
+      throw new Error(d.error || '完成分块合并失败');
     }
-  );
-  if (!completeRes.ok) {
-    const d = await completeRes.json().catch(() => ({}));
+  } catch (err) {
+    // 任何分块上传或合并异常，自动中止并清理云端未完成的孤儿分块垃圾
     apiFetch(
       `${API.file}?key=${encodeURIComponent(key)}&action=abortMultipart&uploadId=${encodeURIComponent(uploadId)}`,
       { method: 'DELETE' }
     ).catch(() => {});
-    throw new Error(d.error || '完成分块合并失败');
+    throw err;
   }
 }
 
@@ -1583,6 +1594,15 @@ document.addEventListener('keydown', e => {
       clearDirCache();
       loadFiles(state.currentPrefix, true);
     }
+  }
+});
+
+// ─── 页面关闭防误触保护 (上传途中提示拦截) ──────────────────────────────────
+window.addEventListener('beforeunload', e => {
+  const hasActiveUploads = state.uploadQueue.some(i => i.status === 'uploading');
+  if (hasActiveUploads) {
+    e.preventDefault();
+    e.returnValue = '';
   }
 });
 

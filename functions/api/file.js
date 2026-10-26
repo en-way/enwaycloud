@@ -93,31 +93,39 @@ function jsonResponse(data, status = 200) {
 
 /**
  * 清除 Cloudflare Edge 边缘缓存 (去除 auth 参数，同步清理单文件与关联目录列表缓存)
+ * 使用 context.waitUntil 守护异步淘汰，杜绝 Worker 实例提前休眠导致任务丢失
+ * @param {object} context
  * @param {string} requestUrl
  * @param {string} key
  */
-function purgeEdgeCache(requestUrl, key) {
+function purgeEdgeCache(context, requestUrl, key) {
   if (typeof caches === 'undefined') return;
   try {
     const cache = caches.default;
+    const promises = [];
+
     // 1. 清理单文件响应缓存
     const fileUrl = new URL(requestUrl);
     fileUrl.pathname = '/api/file';
     fileUrl.search = `?key=${encodeURIComponent(key)}`;
-    cache.delete(new Request(fileUrl.toString(), { method: 'GET' })).catch(() => {});
+    promises.push(cache.delete(new Request(fileUrl.toString(), { method: 'GET' })));
 
     // 2. 清理受影响的 /api/files 目录缓存与 ?all=1 全盘缓存
     const dirUrl = new URL(requestUrl);
     dirUrl.pathname = '/api/files';
     dirUrl.search = '?all=1';
-    cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
+    promises.push(cache.delete(new Request(dirUrl.toString(), { method: 'GET' })));
 
     const prefix = key.includes('/') ? key.substring(0, key.lastIndexOf('/') + 1) : '';
     dirUrl.search = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
-    cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
+    promises.push(cache.delete(new Request(dirUrl.toString(), { method: 'GET' })));
     if (!prefix) {
       dirUrl.search = '?prefix=';
-      cache.delete(new Request(dirUrl.toString(), { method: 'GET' })).catch(() => {});
+      promises.push(cache.delete(new Request(dirUrl.toString(), { method: 'GET' })));
+    }
+
+    if (context && typeof context.waitUntil === 'function') {
+      context.waitUntil(Promise.all(promises).catch(() => {}));
     }
   } catch (_) {}
 }
@@ -189,15 +197,16 @@ async function handleGet(request, env, context) {
       'Accept-Ranges': 'bytes',
     });
 
+    const safeAsciiName = fileName.replace(/["\r\n\\]/g, '_');
     if (forceDownload) {
       // 对文件名进行 RFC 5987 编码，支持中文等非 ASCII 字符
       const encodedFileName = encodeURIComponent(fileName).replace(/'/g, "%27");
       headers.set(
         'Content-Disposition',
-        `attachment; filename="${fileName}"; filename*=UTF-8''${encodedFileName}`
+        `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedFileName}`
       );
     } else {
-      headers.set('Content-Disposition', `inline; filename="${fileName}"`);
+      headers.set('Content-Disposition', `inline; filename="${safeAsciiName}"`);
     }
 
     // 4. 处理 Range 206 Partial Content
@@ -224,6 +233,12 @@ async function handleGet(request, env, context) {
 
     return response;
   } catch (err) {
+    if (err && err.message && (err.message.includes('Range') || err.message.includes('range'))) {
+      return new Response('Range Not Satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': 'bytes */*' },
+      });
+    }
     console.error('[file.js] GET error:', err);
     return jsonResponse({ error: '获取文件失败', message: err.message }, 500);
   }
@@ -233,7 +248,7 @@ async function handleGet(request, env, context) {
  * PUT /api/file?key=xxx
  * 普通上传（适合 < 5MB 的小文件，直接流式写入 R2）
  */
-async function handlePut(request, env) {
+async function handlePut(request, env, context) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
 
@@ -246,7 +261,7 @@ async function handlePut(request, env) {
     await env.R2_BUCKET.put(key, request.body, {
       httpMetadata: { contentType },
     });
-    purgeEdgeCache(request.url, key);
+    purgeEdgeCache(context, request.url, key);
     return jsonResponse({ success: true, key, message: '上传成功' });
   } catch (err) {
     console.error('[file.js] PUT error:', err);
@@ -258,7 +273,7 @@ async function handlePut(request, env) {
  * PUT /api/file?key=xxx&action=mkdir
  * 新建文件夹（在 R2 中上传一个 0 字节的占位对象，key 以 / 结尾）
  */
-async function handleMkdir(request, env) {
+async function handleMkdir(request, env, context) {
   const url = new URL(request.url);
   let key = sanitizeKey(url.searchParams.get('key'));
 
@@ -275,7 +290,7 @@ async function handleMkdir(request, env) {
     await env.R2_BUCKET.put(key, new Uint8Array(0), {
       httpMetadata: { contentType: 'application/x-directory' },
     });
-    purgeEdgeCache(request.url, key);
+    purgeEdgeCache(context, request.url, key);
     return jsonResponse({ success: true, key, message: '文件夹创建成功' });
   } catch (err) {
     console.error('[file.js] mkdir error:', err);
@@ -349,7 +364,7 @@ async function handleUploadPart(request, env) {
  * 完成分块上传，合并所有分块
  * Body: { uploadId: string, parts: [{partNumber: number, etag: string}] }
  */
-async function handleCompleteMultipart(request, env) {
+async function handleCompleteMultipart(request, env, context) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
 
@@ -367,7 +382,7 @@ async function handleCompleteMultipart(request, env) {
 
     const multipartUpload = env.R2_BUCKET.resumeMultipartUpload(key, uploadId);
     const object = await multipartUpload.complete(parts);
-    purgeEdgeCache(request.url, key);
+    purgeEdgeCache(context, request.url, key);
 
     return jsonResponse({
       success: true,
@@ -408,7 +423,7 @@ async function handleAbortMultipart(request, env) {
  * DELETE /api/file?key=xxx
  * 删除文件或空文件夹
  */
-async function handleDelete(request, env) {
+async function handleDelete(request, env, context) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
 
@@ -427,7 +442,7 @@ async function handleDelete(request, env) {
     }
 
     await env.R2_BUCKET.delete(key);
-    purgeEdgeCache(request.url, key);
+    purgeEdgeCache(context, request.url, key);
     return jsonResponse({ success: true, key, message: '删除成功' });
   } catch (err) {
     console.error('[file.js] DELETE error:', err);
@@ -440,7 +455,7 @@ async function handleDelete(request, env) {
  * 批量删除文件（单次原子操作，减少 98% Functions 调用与 R2 开销）
  * Body: { keys: string[] }
  */
-async function handleBatchDelete(request, env) {
+async function handleBatchDelete(request, env, context) {
   try {
     const body = await request.json().catch(() => ({}));
     const { keys } = body;
@@ -473,8 +488,8 @@ async function handleBatchDelete(request, env) {
     // R2 原生批量原子删除：delete(keys: string[])，仅计为 1 次原子操作且免费
     await env.R2_BUCKET.delete(validKeys);
 
-    // 异步清理边缘缓存
-    validKeys.forEach(k => purgeEdgeCache(request.url, k));
+    // 异步清理边缘缓存 (使用 context.waitUntil 守护)
+    validKeys.forEach(k => purgeEdgeCache(context, request.url, k));
 
     return jsonResponse({
       success: true,
@@ -511,30 +526,30 @@ export async function onRequest(context) {
       if (action === 'abortMultipart') {
         return await handleAbortMultipart(request, env);
       }
-      return await handleDelete(request, env);
+      return await handleDelete(request, env, context);
     }
 
     // PUT：普通上传 / 新建文件夹 / 上传分块
     if (method === 'PUT') {
       if (action === 'mkdir') {
-        return await handleMkdir(request, env);
+        return await handleMkdir(request, env, context);
       }
       if (action === 'uploadPart') {
         return await handleUploadPart(request, env);
       }
-      return await handlePut(request, env);
+      return await handlePut(request, env, context);
     }
 
     // POST：批量删除 / 创建分块上传 / 完成分块上传
     if (method === 'POST') {
       if (action === 'batchDelete') {
-        return await handleBatchDelete(request, env);
+        return await handleBatchDelete(request, env, context);
       }
       if (action === 'createMultipart') {
         return await handleCreateMultipart(request, env);
       }
       if (action === 'completeMultipart') {
-        return await handleCompleteMultipart(request, env);
+        return await handleCompleteMultipart(request, env, context);
       }
       return jsonResponse({ error: '不支持的 POST action' }, 400);
     }
