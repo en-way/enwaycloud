@@ -60,9 +60,12 @@ export async function onRequestGet(context) {
         etag: obj.etag || null,
       }));
 
+      const totalSize = (listed.objects || []).reduce((sum, obj) => sum + (obj.size || 0), 0);
+
       const resData = {
         all: true,
         objects,
+        totalSize,
         truncated: listed.truncated || false,
         cursor: listed.truncated ? (listed.cursor || null) : null,
       };

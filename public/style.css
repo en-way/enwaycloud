@@ -165,6 +165,59 @@ input::-webkit-caps-lock-indicator {
 .header-left {
   display: flex;
   align-items: center;
+  gap: 12px;
+}
+
+/* 顶部云盘容量微质感胶囊 (Apple 现代极简风格) */
+.storage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  transition: all var(--spring-transition);
+  cursor: default;
+  user-select: none;
+}
+
+.storage-badge:hover {
+  background: rgba(0, 0, 0, 0.07);
+  color: var(--color-text-primary);
+}
+
+.storage-bar {
+  width: 46px;
+  height: 5px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.storage-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--color-primary);
+  border-radius: 3px;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
+.storage-bar-fill.warning {
+  background: #ff9500;
+}
+
+.storage-bar-fill.danger {
+  background: var(--color-danger);
+}
+
+.storage-text {
+  letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
 .header-title {
@@ -773,6 +826,35 @@ input::-webkit-caps-lock-indicator {
 .status-done      { color: var(--color-success); }
 .status-error     { color: var(--color-danger); }
 .status-pending   { color: var(--color-text-tertiary); }
+.status-canceled  { color: var(--color-text-tertiary); }
+
+.upload-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-cancel-upload {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: all var(--spring-transition);
+}
+
+.btn-cancel-upload:hover {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--color-danger);
+  transform: scale(1.08);
+}
 
 /* ─── 12. 弹窗系统 (毛玻璃轻奢微质感升级) ─────────────────────────────────────── */
 .modal-overlay {
@@ -1151,8 +1233,20 @@ input::-webkit-caps-lock-indicator {
     height: 52px;
     padding: 0 16px;
   }
+  .header-left {
+    gap: 8px;
+  }
   .header-title {
-    font-size: 16px;
+    font-size: 15.5px;
+  }
+  .storage-badge {
+    padding: 2px 7px;
+    font-size: 10px;
+    gap: 5px;
+  }
+  .storage-bar {
+    width: 32px;
+    height: 4px;
   }
 
   /* 工具栏四键弹性平铺 */

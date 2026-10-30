@@ -20,6 +20,8 @@ const API = {
 // ─── sessionStorage 跨刷新目录持久化缓存 (10分钟保鲜) ──────────────────────────
 const DIR_CACHE_TTL = 10 * 60 * 1000; // 10 分钟有效期
 const STORAGE_CACHE_KEY = 'r2_drive_cache_v2';
+const STORAGE_USAGE_KEY = 'r2_drive_usage_v1';
+const TOTAL_CAPACITY_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB 免费额度
 const inFlightRequests = new Map(); // key -> Promise
 
 function loadDirCacheFromStorage() {
@@ -51,9 +53,14 @@ function saveDirCacheToStorage() {
 
 function clearDirCache() {
   dirCache.clear();
-  try { sessionStorage.removeItem(STORAGE_CACHE_KEY); } catch (_) {}
+  try {
+    sessionStorage.removeItem(STORAGE_CACHE_KEY);
+    sessionStorage.removeItem(STORAGE_USAGE_KEY);
+  } catch (_) {}
   state.allObjects = null;
   state.isVirtualTree = false;
+  state.totalUsedBytes = 0;
+  updateStorageUI(0);
 }
 
 // ─── 全盘轻量虚拟树解析引擎 (Single-Pass Virtual Tree: 0 网络请求，0 Class A) ────
@@ -102,6 +109,24 @@ function optimisticRemoveItems(keys) {
     return false;
   };
 
+  // 统计被删除文件的总大小
+  let deletedBytes = 0;
+  const removedSet = new Set();
+  state.files.forEach(f => {
+    if (isRemoved(f.key) && !removedSet.has(f.key)) {
+      removedSet.add(f.key);
+      deletedBytes += (f.size || 0);
+    }
+  });
+  if (state.allObjects) {
+    state.allObjects.forEach(o => {
+      if (isRemoved(o.key) && !removedSet.has(o.key)) {
+        removedSet.add(o.key);
+        deletedBytes += (o.size || 0);
+      }
+    });
+  }
+
   state.files = state.files.filter(f => !isRemoved(f.key));
   state.folders = state.folders.filter(f => !isRemoved(f));
 
@@ -120,6 +145,10 @@ function optimisticRemoveItems(keys) {
     }
   }
   saveDirCacheToStorage();
+
+  // 3. 实时扣减容量并更新 UI (0 额外 Class A)
+  state.totalUsedBytes = Math.max(0, state.totalUsedBytes - deletedBytes);
+  updateStorageUI(state.totalUsedBytes);
 
   keys.forEach(k => textPreviewCache.delete(k));
   state.selectedKeys.clear();
@@ -158,6 +187,9 @@ function optimisticAddFolder(folderKey) {
 
 function optimisticAddFile(key, size, mimeType) {
   textPreviewCache.delete(key);
+  const oldFile = state.files.find(f => f.key === key) || (state.allObjects && state.allObjects.find(o => o.key === key));
+  const diff = size - (oldFile ? (oldFile.size || 0) : 0);
+
   const newFile = {
     key,
     size,
@@ -182,6 +214,11 @@ function optimisticAddFile(key, size, mimeType) {
     cached.files.push(newFile);
   }
   saveDirCacheToStorage();
+
+  // 3. 实时累加容量并更新 UI (0 额外 Class A)
+  state.totalUsedBytes = Math.max(0, state.totalUsedBytes + diff);
+  updateStorageUI(state.totalUsedBytes);
+
   renderFileList();
 }
 
@@ -288,6 +325,7 @@ const state = {
   loading:       false,
   allObjects:    null,       // 全盘虚拟树平铺对象数组
   isVirtualTree: false,      // 是否启用了全盘虚拟树模式 (整盘 1 次 Class A 搞定)
+  totalUsedBytes: parseInt(sessionStorage.getItem(STORAGE_USAGE_KEY) || '0', 10) || 0,
 };
 
 // ─── DOM 缓存 ──────────────────────────────────────────────────────────────────
@@ -305,6 +343,9 @@ const dom = {
 
   app:                $('app'),
   breadcrumb:         $('breadcrumb'),
+  storageBadge:       $('storage-badge'),
+  storageBarFill:     $('storage-bar-fill'),
+  storageText:        $('storage-text'),
 
   btnViewList:        $('btn-view-list'),
   btnViewGrid:        $('btn-view-grid'),
@@ -516,10 +557,28 @@ function showLogin() {
   setTimeout(() => dom.passwordInput?.focus(), 150);
 }
 
+// ─── 云盘容量占用显示 (Apple 微质感胶囊，0 额外 Class A) ────────────────────────
+function updateStorageUI(usedBytes) {
+  if (usedBytes != null) {
+    state.totalUsedBytes = Math.max(0, usedBytes);
+    try {
+      sessionStorage.setItem(STORAGE_USAGE_KEY, String(state.totalUsedBytes));
+    } catch (_) {}
+  }
+  if (!dom.storageBadge) return;
+  dom.storageBadge.hidden = false;
+  const pct = Math.min(100, Math.max(0, (state.totalUsedBytes / TOTAL_CAPACITY_BYTES) * 100));
+  dom.storageBarFill.style.width = pct.toFixed(1) + '%';
+  dom.storageBarFill.classList.toggle('warning', pct >= 80 && pct < 95);
+  dom.storageBarFill.classList.toggle('danger', pct >= 95);
+  dom.storageText.textContent = `${formatSize(state.totalUsedBytes)} / 10 GB`;
+}
+
 function showApp() {
   dom.loginModal.hidden = true;
   dom.app.hidden = false;
   applyViewMode();
+  updateStorageUI();
   loadFiles(state.currentPrefix);
 }
 
@@ -649,6 +708,12 @@ async function loadFiles(prefix = '', forceRefresh = false) {
         const vData = extractVirtualDir(prefix);
         state.folders = vData ? vData.folders : [];
         state.files = vData ? vData.files : [];
+
+        // 统计并同步全盘容量 (0 额外 Class A)
+        const total = data.totalSize != null
+          ? data.totalSize
+          : state.allObjects.reduce((acc, o) => acc + (o.size || 0), 0);
+        updateStorageUI(total);
       } else {
         // 单目录按需降级模式
         state.folders = data.folders || [];
@@ -824,9 +889,19 @@ function renderFileList() {
   const { sortedFolders, sortedFiles } = getSortedItems();
   const totalCount = sortedFolders.length + sortedFiles.length;
 
-  dom.fileCount.textContent = totalCount > 0
-    ? `${sortedFolders.length} 文件夹 · ${sortedFiles.length} 文件`
-    : '';
+  if (totalCount > 0) {
+    const parts = [];
+    if (sortedFolders.length > 0) parts.push(`${sortedFolders.length} 文件夹`);
+    if (sortedFiles.length > 0) parts.push(`${sortedFiles.length} 文件`);
+    let text = parts.join(' · ');
+    const currentFilesSize = sortedFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+    if (currentFilesSize > 0) {
+      text += ` (${formatSize(currentFilesSize)})`;
+    }
+    dom.fileCount.textContent = text;
+  } else {
+    dom.fileCount.textContent = '';
+  }
 
   if (state.viewMode === 'list') {
     renderListView(sortedFolders, sortedFiles);
@@ -1355,12 +1430,45 @@ function enqueueFiles(files) {
     status:   'pending',
     progress: 0,
     error:    null,
+    abort:    null,
   }));
   state.uploadQueue.push(...items);
   dom.uploadPanel.hidden = false;
   renderUploadPanel();
   processUploadQueue();
 }
+
+function cancelUpload(id) {
+  const item = state.uploadQueue.find(i => i.id === id);
+  if (!item) return;
+
+  if (item.status === 'pending') {
+    item.status = 'canceled';
+    updateUploadItemUI(item);
+    showToast(`已取消 ${item.name} 的上传`, 'info');
+    processUploadQueue();
+    return;
+  }
+
+  if (item.status === 'uploading') {
+    item.status = 'canceled';
+    if (typeof item.abort === 'function') {
+      try { item.abort(); } catch (_) {}
+    }
+    updateUploadItemUI(item);
+    showToast(`已取消 ${item.name} 的上传`, 'info');
+    processUploadQueue();
+  }
+}
+
+// 事件委托：监听上传面板中的取消按钮点击
+dom.uploadList.addEventListener('click', e => {
+  const cancelBtn = e.target.closest('[data-cancel-id]');
+  if (cancelBtn) {
+    e.stopPropagation();
+    cancelUpload(cancelBtn.dataset.cancelId);
+  }
+});
 
 function renderUploadPanel() {
   dom.uploadList.innerHTML = '';
@@ -1374,7 +1482,10 @@ function renderUploadPanel() {
       uploading: `${Math.round(item.progress)}%`,
       done:      '已完成',
       error:     `上传失败: ${item.error || '未知错误'}`,
+      canceled:  '已取消',
     }[item.status] || '';
+
+    const isCancellable = item.status === 'pending' || item.status === 'uploading';
 
     div.innerHTML = `
       <div style="flex-shrink:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center">
@@ -1388,7 +1499,16 @@ function renderUploadPanel() {
             <div class="upload-progress-fill" style="width:${item.progress}%"></div>
           </div>` : ''}
       </div>
-      <span class="upload-item-status status-${item.status}">${statusText}</span>`;
+      <div class="upload-item-actions">
+        <span class="upload-item-status status-${item.status}">${statusText}</span>
+        ${isCancellable ? `
+          <button type="button" class="btn-cancel-upload" data-cancel-id="${item.id}" title="取消上传" aria-label="取消上传">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>` : ''}
+      </div>`;
 
     dom.uploadList.appendChild(div);
   });
@@ -1403,12 +1523,19 @@ function updateUploadItemUI(item) {
     uploading: `${Math.round(item.progress)}%`,
     done:      '已完成',
     error:     `上传失败: ${item.error || '未知错误'}`,
+    canceled:  '已取消',
   }[item.status] || '';
 
   const statusEl = el.querySelector('.upload-item-status');
   if (statusEl) {
     statusEl.textContent = statusText;
     statusEl.className = `upload-item-status status-${item.status}`;
+  }
+
+  const cancelBtn = el.querySelector('.btn-cancel-upload');
+  const isCancellable = item.status === 'pending' || item.status === 'uploading';
+  if (!isCancellable && cancelBtn) {
+    cancelBtn.remove();
   }
 
   const info = el.querySelector('.upload-item-info');
@@ -1446,6 +1573,7 @@ async function processUploadQueue() {
 }
 
 async function uploadFile(item) {
+  if (item.status === 'canceled') return;
   const key = state.currentPrefix + item.name;
   try {
     if (item.size >= MULTIPART_THRESHOLD) {
@@ -1453,12 +1581,17 @@ async function uploadFile(item) {
     } else {
       await uploadSimple(item, key);
     }
+    if (item.status === 'canceled') return;
     item.status = 'done';
     item.progress = 100;
     showToast(`${item.name} 上传成功`, 'success');
     // 乐观更新：将新上传的文件直接合入本地列表与缓存，免去额外的 /api/files 列表请求！
     optimisticAddFile(key, item.size, item.file.type);
   } catch (err) {
+    if (item.status === 'canceled' || err.name === 'AbortError' || err.message === 'Upload aborted') {
+      item.status = 'canceled';
+      return;
+    }
     item.status = 'error';
     item.error = err.message;
     showToast(`${item.name} 上传失败：${err.message}`, 'error');
@@ -1471,11 +1604,16 @@ async function uploadSimple(item, key) {
   const contentType = item.file.type || 'application/octet-stream';
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    item.abort = () => {
+      xhr.abort();
+    };
+
     xhr.open('PUT', `${API.file}?key=${encodeURIComponent(key)}`);
     xhr.setRequestHeader('Content-Type', contentType);
     if (state.password) xhr.setRequestHeader('X-Drive-Password', state.password);
 
     xhr.upload.onprogress = e => {
+      if (item.status === 'canceled') return;
       if (e.lengthComputable) {
         item.progress = (e.loaded / e.total) * 100;
         updateUploadItemUI(item);
@@ -1483,22 +1621,35 @@ async function uploadSimple(item, key) {
     };
 
     xhr.onload = () => {
+      if (item.status === 'canceled') return resolve();
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
     };
-    xhr.onerror = () => reject(new Error('网络中断，上传失败'));
+    xhr.onerror = () => {
+      if (item.status === 'canceled') return resolve();
+      reject(new Error('网络中断，上传失败'));
+    };
+    xhr.onabort = () => {
+      item.status = 'canceled';
+      resolve();
+    };
     xhr.send(item.file);
   });
 }
 
 async function uploadMultipart(item, key) {
   const contentType = item.file.type || 'application/octet-stream';
+  const abortController = new AbortController();
+  item.abort = () => {
+    abortController.abort();
+  };
 
   const createRes = await apiFetch(
     `${API.file}?key=${encodeURIComponent(key)}&action=createMultipart`,
     {
       method: 'POST',
       headers: { 'X-Content-Type': contentType },
+      signal: abortController.signal,
     }
   );
   if (!createRes.ok) {
@@ -1513,6 +1664,10 @@ async function uploadMultipart(item, key) {
     let uploadedBytes = 0;
 
     for (let batchStart = 0; batchStart < totalChunks; batchStart += MAX_CONCURRENT_CHUNKS) {
+      if (item.status === 'canceled' || abortController.signal.aborted) {
+        throw new Error('Upload aborted');
+      }
+
       const batchEnd = Math.min(batchStart + MAX_CONCURRENT_CHUNKS, totalChunks);
       const batchPromises = [];
 
@@ -1526,7 +1681,7 @@ async function uploadMultipart(item, key) {
           (async () => {
             const res = await apiFetch(
               `${API.file}?key=${encodeURIComponent(key)}&action=uploadPart&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
-              { method: 'PUT', body: chunk }
+              { method: 'PUT', body: chunk, signal: abortController.signal }
             );
             if (!res.ok) {
               const d = await res.json().catch(() => ({}));
@@ -1534,8 +1689,10 @@ async function uploadMultipart(item, key) {
             }
             const data = await res.json();
             uploadedBytes += (end - start);
-            item.progress = (uploadedBytes / item.size) * 100;
-            updateUploadItemUI(item);
+            if (item.status === 'uploading') {
+              item.progress = (uploadedBytes / item.size) * 100;
+              updateUploadItemUI(item);
+            }
             return { partNumber, etag: data.etag };
           })()
         );
@@ -1545,6 +1702,10 @@ async function uploadMultipart(item, key) {
       parts.push(...batchResults);
     }
 
+    if (item.status === 'canceled' || abortController.signal.aborted) {
+      throw new Error('Upload aborted');
+    }
+
     parts.sort((a, b) => a.partNumber - b.partNumber);
     const completeRes = await apiFetch(
       `${API.file}?key=${encodeURIComponent(key)}&action=completeMultipart`,
@@ -1552,6 +1713,7 @@ async function uploadMultipart(item, key) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uploadId, parts }),
+        signal: abortController.signal,
       }
     );
     if (!completeRes.ok) {
@@ -1559,7 +1721,7 @@ async function uploadMultipart(item, key) {
       throw new Error(d.error || '完成分块合并失败');
     }
   } catch (err) {
-    // 任何分块上传或合并异常，自动中止并清理云端未完成的孤儿分块垃圾
+    // 任何分块上传、合并异常或主动取消，自动中止并清理云端未完成的孤儿分块垃圾
     apiFetch(
       `${API.file}?key=${encodeURIComponent(key)}&action=abortMultipart&uploadId=${encodeURIComponent(uploadId)}`,
       { method: 'DELETE' }
@@ -1569,7 +1731,7 @@ async function uploadMultipart(item, key) {
 }
 
 dom.btnClearDone.addEventListener('click', () => {
-  state.uploadQueue = state.uploadQueue.filter(i => i.status !== 'done' && i.status !== 'error');
+  state.uploadQueue = state.uploadQueue.filter(i => i.status !== 'done' && i.status !== 'error' && i.status !== 'canceled');
   if (state.uploadQueue.length === 0) {
     dom.uploadPanel.hidden = true;
   } else {
