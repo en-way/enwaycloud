@@ -502,6 +502,69 @@ async function handleBatchDelete(request, env, context) {
   }
 }
 
+/**
+ * POST /api/file?action=move
+ * 移动/重命名文件或文件夹（单次或批量流式复制）
+ * Body: { items: [{ from: string, to: string }] }
+ */
+async function handleMove(request, env, context) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const { items } = body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return jsonResponse({ error: '缺少有效的 items 数组' }, 400);
+    }
+
+    // 限制单次移动上限 500 个项目
+    const validItems = items.slice(0, 500);
+    const results = [];
+
+    for (const item of validItems) {
+      const fromKey = sanitizeKey(item.from);
+      const toKey = sanitizeKey(item.to);
+
+      if (!fromKey || !toKey || fromKey === toKey) {
+        results.push({ from: item.from, to: item.to, success: false, error: '无效的源路径或目标路径' });
+        continue;
+      }
+
+      // 检查源对象
+      const srcObj = await env.R2_BUCKET.get(fromKey);
+      if (!srcObj) {
+        results.push({ from: fromKey, to: toKey, success: false, error: '源文件不存在' });
+        continue;
+      }
+
+      // 流式写入目标 key
+      await env.R2_BUCKET.put(toKey, srcObj.body, {
+        httpMetadata: srcObj.httpMetadata,
+        customMetadata: srcObj.customMetadata,
+      });
+
+      // 删除原 key（免费操作）
+      await env.R2_BUCKET.delete(fromKey);
+
+      // 清理 Edge Cache
+      purgeEdgeCache(context, request.url, fromKey);
+      purgeEdgeCache(context, request.url, toKey);
+
+      results.push({ from: fromKey, to: toKey, success: true });
+    }
+
+    const movedCount = results.filter(r => r.success).length;
+    return jsonResponse({
+      success: true,
+      message: `成功移动/重命名 ${movedCount} 个项目`,
+      movedCount,
+      results,
+    });
+  } catch (err) {
+    console.error('[file.js] move error:', err);
+    return jsonResponse({ error: '移动操作失败', message: err.message }, 500);
+  }
+}
+
 // ─── 主路由入口 ────────────────────────────────────────────────────────────────
 
 export async function onRequest(context) {
@@ -540,10 +603,13 @@ export async function onRequest(context) {
       return await handlePut(request, env, context);
     }
 
-    // POST：批量删除 / 创建分块上传 / 完成分块上传
+    // POST：批量删除 / 移动重命名 / 创建分块上传 / 完成分块上传
     if (method === 'POST') {
       if (action === 'batchDelete') {
         return await handleBatchDelete(request, env, context);
+      }
+      if (action === 'move') {
+        return await handleMove(request, env, context);
       }
       if (action === 'createMultipart') {
         return await handleCreateMultipart(request, env);

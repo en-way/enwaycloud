@@ -53,6 +53,9 @@ function saveDirCacheToStorage() {
 
 function clearDirCache() {
   dirCache.clear();
+  textPreviewCache.clear();
+  heicPreviewCache.clear();
+  xlsxPreviewCache.clear();
   try {
     sessionStorage.removeItem(STORAGE_CACHE_KEY);
     sessionStorage.removeItem(STORAGE_USAGE_KEY);
@@ -95,8 +98,23 @@ function extractVirtualDir(prefix) {
   };
 }
 
-// ─── 文本预览本地内存缓存 (同一会话内重复查看零网络开销) ──────────────────────────
+// ─── 预览本地内存缓存池 (同一会话内重复查看零网络开销，零 Class A) ────────────────
 const textPreviewCache = new Map(); // key -> text content
+const heicPreviewCache = new Map(); // key -> ObjectUrl
+const xlsxPreviewCache = new Map(); // key -> ArrayBuffer
+
+// ─── 异步依赖脚本按需加载器 (仅在首次使用时拉取本地 vendor，0 首屏负担) ──────────────
+const loadedScripts = new Set();
+function loadScript(src) {
+  if (loadedScripts.has(src)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => { loadedScripts.add(src); resolve(); };
+    s.onerror = () => reject(new Error('无法加载本地依赖库：' + src));
+    document.head.appendChild(s);
+  });
+}
 
 // ─── 本地状态乐观更新 (Optimistic UI Update: 彻底省去写后额外 list() 请求) ───────
 function optimisticRemoveItems(keys) {
@@ -222,11 +240,58 @@ function optimisticAddFile(key, size, mimeType) {
   renderFileList();
 }
 
+function optimisticMoveItems(mappings) {
+  // mappings: Array<{ from: string, to: string, isFolder: boolean }>
+  for (const m of mappings) {
+    textPreviewCache.delete(m.from);
+    heicPreviewCache.delete(m.from);
+    xlsxPreviewCache.delete(m.from);
+
+    if (m.isFolder) {
+      if (state.allObjects) {
+        state.allObjects.forEach(obj => {
+          if (obj.key.startsWith(m.from)) {
+            obj.key = m.to + obj.key.slice(m.from.length);
+          }
+        });
+      }
+    } else {
+      if (state.allObjects) {
+        const target = state.allObjects.find(o => o.key === m.from);
+        if (target) {
+          target.key = m.to;
+        }
+      }
+    }
+  }
+
+  // 清空内存目录缓存池以基于原地更新后的 state.allObjects 重新渲染，0 次网络请求
+  dirCache.clear();
+  sessionStorage.removeItem(DIR_CACHE_KEY);
+
+  if (state.isVirtualTree && state.allObjects) {
+    const vData = extractVirtualDir(state.currentPrefix);
+    if (vData) {
+      state.folders = vData.folders;
+      state.files = vData.files;
+    }
+  } else {
+    const fromKeys = new Set(mappings.map(m => m.from));
+    state.files = state.files.filter(f => !fromKeys.has(f.key));
+    state.folders = state.folders.filter(f => !fromKeys.has(f));
+  }
+
+  state.selectedKeys.clear();
+  updateSelectionUI();
+  renderFileList();
+}
+
 // 扩展名映射文件类型
 const EXT_TYPE_MAP = {
   // 图片
   jpg:'image', jpeg:'image', png:'image', gif:'image', webp:'image',
   svg:'image', bmp:'image', ico:'image', tiff:'image', avif:'image',
+  heic:'image', heif:'image',
   // 视频
   mp4:'video', webm:'video', mov:'video', avi:'video', mkv:'video', flv:'video',
   // 音频
@@ -354,6 +419,10 @@ const dom = {
   btnUpload:          $('btn-upload'),
   fileInput:          $('file-input'),
   btnMkdir:           $('btn-mkdir'),
+  btnBatchRename:     $('btn-batch-rename'),
+  textBatchRename:    $('text-batch-rename'),
+  btnBatchMove:       $('btn-batch-move'),
+  textBatchMove:      $('text-batch-move'),
   btnBatchDownload:   $('btn-batch-download'),
   textBatchDownload:  $('text-batch-download'),
   btnBatchDelete:     $('btn-batch-delete'),
@@ -397,6 +466,22 @@ const dom = {
   confirmMessage:     $('confirm-message'),
   btnConfirmCancel:   $('btn-confirm-cancel'),
   btnConfirmOk:       $('btn-confirm-ok'),
+
+  renameModal:        $('rename-modal'),
+  renameTitle:        $('rename-title'),
+  renameForm:         $('rename-form'),
+  renameInput:        $('rename-input'),
+  renameError:        $('rename-error'),
+  btnRenameCancel:    $('btn-rename-cancel'),
+  btnRenameSubmit:    $('btn-rename-submit'),
+
+  moveModal:          $('move-modal'),
+  moveTitle:          $('move-title'),
+  moveSubtitle:       $('move-subtitle'),
+  moveFolderTree:     $('move-folder-tree'),
+  moveQuotaTip:       $('move-quota-tip'),
+  btnMoveCancel:      $('btn-move-cancel'),
+  btnMoveConfirm:     $('btn-move-confirm'),
 
   toastContainer:     $('toast-container'),
 };
@@ -812,6 +897,17 @@ function updateSelectionUI() {
   if (dom.btnBatchDownload) {
     dom.btnBatchDownload.disabled = count === 0;
     dom.textBatchDownload.textContent = count > 0 ? `下载 (${count})` : '下载';
+  }
+
+  // 更新工具栏重命名按钮（仅勾选 1 项时显示）
+  if (dom.btnBatchRename) {
+    dom.btnBatchRename.hidden = count !== 1;
+  }
+
+  // 更新工具栏批量移动按钮
+  if (dom.btnBatchMove) {
+    dom.btnBatchMove.disabled = count === 0;
+    dom.textBatchMove.textContent = count > 0 ? `移动 (${count})` : '移动到';
   }
 
   // 更新工具栏批量删除按钮
@@ -1245,11 +1341,452 @@ function downloadFile(key) {
   document.body.removeChild(a);
 }
 
-// ─── 文件在线预览 Modal (支持直接下载与删除) ───────────────────────────────────
+// ─── 多格式全端高清预览引擎 ──────────────────────────────────────────────────
+let currentPdfCleanup = null;
+
+async function renderPdfPreview(file, mediaUrl) {
+  dom.previewBody.innerHTML = `
+    <div class="preview-loading-tip">
+      <div class="spinner-modern"></div>
+      <p>正在载入 PDF 高清引擎...</p>
+    </div>`;
+
+  try {
+    await loadScript('/vendor/pdfjs/pdf.min.js');
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
+    }
+
+    const res = await apiFetch(mediaUrl);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.arrayBuffer();
+
+    const loadingTask = window.pdfjsLib.getDocument({ data });
+    const pdfDoc = await loadingTask.promise;
+
+    let currentPageNum = 1;
+    const totalPages = pdfDoc.numPages;
+    let currentScale = 1.25;
+    let isRendering = false;
+    let pendingPageNum = null;
+
+    dom.previewBody.innerHTML = `
+      <div class="preview-pdf-container">
+        <div class="pdf-canvas-wrap" id="pdf-canvas-wrap">
+          <canvas id="pdf-canvas"></canvas>
+        </div>
+        <div class="pdf-controls-pill">
+          <button class="btn-icon" id="btn-pdf-prev" title="上一页" ${currentPageNum <= 1 ? 'disabled' : ''}>◀</button>
+          <span class="pdf-page-indicator" id="pdf-page-indicator">${currentPageNum} / ${totalPages}</span>
+          <button class="btn-icon" id="btn-pdf-next" title="下一页" ${currentPageNum >= totalPages ? 'disabled' : ''}>▶</button>
+          <div class="pdf-divider"></div>
+          <button class="btn-icon" id="btn-pdf-zoom-out" title="缩小">-</button>
+          <button class="btn-icon" id="btn-pdf-fit" title="自适应宽度" style="font-size:11px;width:auto;padding:0 6px">适应</button>
+          <button class="btn-icon" id="btn-pdf-zoom-in" title="放大">+</button>
+        </div>
+      </div>`;
+
+    const canvas = dom.previewBody.querySelector('#pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const wrap = dom.previewBody.querySelector('#pdf-canvas-wrap');
+    const indicator = dom.previewBody.querySelector('#pdf-page-indicator');
+    const btnPrev = dom.previewBody.querySelector('#btn-pdf-prev');
+    const btnNext = dom.previewBody.querySelector('#btn-pdf-next');
+    const btnZoomOut = dom.previewBody.querySelector('#btn-pdf-zoom-out');
+    const btnZoomIn = dom.previewBody.querySelector('#btn-pdf-zoom-in');
+    const btnFit = dom.previewBody.querySelector('#btn-pdf-fit');
+
+    async function renderPage(num) {
+      isRendering = true;
+      const page = await pdfDoc.getPage(num);
+      const dpr = window.devicePixelRatio || 1;
+      const viewport = page.getViewport({ scale: currentScale });
+
+      canvas.width = Math.floor(viewport.width * dpr);
+      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.style.width = Math.floor(viewport.width) + 'px';
+      canvas.style.height = Math.floor(viewport.height) + 'px';
+
+      const renderContext = {
+        canvasContext: ctx,
+        transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+        viewport,
+      };
+
+      await page.render(renderContext).promise;
+      isRendering = false;
+
+      if (pendingPageNum !== null) {
+        const next = pendingPageNum;
+        pendingPageNum = null;
+        renderPage(next);
+      }
+
+      indicator.textContent = `${num} / ${totalPages}`;
+      btnPrev.disabled = num <= 1;
+      btnNext.disabled = num >= totalPages;
+    }
+
+    function queueRenderPage(num) {
+      if (isRendering) {
+        pendingPageNum = num;
+      } else {
+        renderPage(num);
+      }
+    }
+
+    btnPrev.addEventListener('click', () => {
+      if (currentPageNum <= 1) return;
+      currentPageNum--;
+      queueRenderPage(currentPageNum);
+    });
+
+    btnNext.addEventListener('click', () => {
+      if (currentPageNum >= totalPages) return;
+      currentPageNum++;
+      queueRenderPage(currentPageNum);
+    });
+
+    btnZoomIn.addEventListener('click', () => {
+      if (currentScale >= 3.0) return;
+      currentScale += 0.25;
+      queueRenderPage(currentPageNum);
+    });
+
+    btnZoomOut.addEventListener('click', () => {
+      if (currentScale <= 0.5) return;
+      currentScale = Math.max(0.5, currentScale - 0.25);
+      queueRenderPage(currentPageNum);
+    });
+
+    btnFit.addEventListener('click', async () => {
+      const page = await pdfDoc.getPage(currentPageNum);
+      const vp = page.getViewport({ scale: 1 });
+      const wrapWidth = wrap.clientWidth - 48;
+      if (wrapWidth > 0 && vp.width > 0) {
+        currentScale = Math.max(0.4, wrapWidth / vp.width);
+        queueRenderPage(currentPageNum);
+      }
+    });
+
+    const onKeydown = e => {
+      if (dom.previewModal.hidden) return;
+      if (e.key === 'ArrowLeft') {
+        if (currentPageNum > 1) { currentPageNum--; queueRenderPage(currentPageNum); }
+      } else if (e.key === 'ArrowRight') {
+        if (currentPageNum < totalPages) { currentPageNum++; queueRenderPage(currentPageNum); }
+      }
+    };
+    window.addEventListener('keydown', onKeydown);
+
+    currentPdfCleanup = () => {
+      window.removeEventListener('keydown', onKeydown);
+    };
+
+    renderPage(currentPageNum);
+
+  } catch (err) {
+    console.error('PDF.js render error:', err);
+    dom.previewBody.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.className = 'preview-pdf';
+    iframe.src = mediaUrl;
+    iframe.title = file.key;
+    dom.previewBody.appendChild(iframe);
+  }
+}
+
+async function renderDocxPreview(file, mediaUrl) {
+  dom.previewBody.innerHTML = `
+    <div class="preview-loading-tip">
+      <div class="spinner-modern"></div>
+      <p>正在解析 Word 高保真文档...</p>
+    </div>`;
+
+  try {
+    await loadScript('/vendor/jszip.min.js');
+    await loadScript('/vendor/docx-preview.min.js');
+
+    const res = await apiFetch(mediaUrl);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+
+    const wrap = document.createElement('div');
+    wrap.className = 'preview-docx-wrap';
+    dom.previewBody.innerHTML = '';
+    dom.previewBody.appendChild(wrap);
+
+    await window.docx.renderAsync(blob, wrap, null, {
+      className: 'docx',
+      inWrapper: true,
+      ignoreWidth: false,
+      ignoreHeight: false,
+      breakPages: true,
+    });
+  } catch (err) {
+    dom.previewBody.innerHTML = `
+      <div style="text-align:center;padding:48px 20px;color:#86868b">
+        <div style="margin-bottom:16px">${renderSvgIcon('word', 56)}</div>
+        <p style="font-size:15px;color:#ff3b30;margin-bottom:8px">Word 文档解析失败</p>
+        <p style="font-size:13px;margin-bottom:20px">${escapeHtml(err.message)}</p>
+        <button class="btn btn-primary" id="btn-modal-dl">⬇️ 立即下载该文件查看</button>
+      </div>`;
+    dom.previewBody.querySelector('#btn-modal-dl')?.addEventListener('click', () => downloadFile(file.key));
+  }
+}
+
+async function renderHeicPreview(file, mediaUrl) {
+  if (heicPreviewCache.has(file.key)) {
+    const img = document.createElement('img');
+    img.alt = getFileName(file.key);
+    img.src = heicPreviewCache.get(file.key);
+    dom.previewBody.innerHTML = '';
+    dom.previewBody.appendChild(img);
+    return;
+  }
+
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  if (isSafari) {
+    const img = document.createElement('img');
+    img.alt = getFileName(file.key);
+    img.src = mediaUrl;
+    img.style.opacity = '0';
+    img.style.transition = 'opacity 0.25s ease';
+    img.onload = () => { img.style.opacity = '1'; };
+    dom.previewBody.innerHTML = '';
+    dom.previewBody.appendChild(img);
+    return;
+  }
+
+  dom.previewBody.innerHTML = `
+    <div class="preview-loading-tip">
+      <div class="spinner-modern"></div>
+      <p>正在解码 HEIC 高清图像...</p>
+    </div>`;
+
+  try {
+    await loadScript('/vendor/heic2any.min.js');
+    const res = await apiFetch(mediaUrl);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+
+    const conversionResult = await window.heic2any({
+      blob,
+      toType: 'image/jpeg',
+      quality: 0.85,
+    });
+    const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
+    const objectUrl = URL.createObjectURL(resultBlob);
+    heicPreviewCache.set(file.key, objectUrl);
+
+    const img = document.createElement('img');
+    img.alt = getFileName(file.key);
+    img.src = objectUrl;
+    img.style.opacity = '0';
+    img.style.transition = 'opacity 0.25s ease';
+    img.onload = () => { img.style.opacity = '1'; };
+
+    dom.previewBody.innerHTML = '';
+    dom.previewBody.appendChild(img);
+  } catch (err) {
+    dom.previewBody.innerHTML = `
+      <div style="text-align:center;padding:48px 20px;color:#86868b">
+        <div style="margin-bottom:16px">${renderSvgIcon('image', 56)}</div>
+        <p style="font-size:15px;color:#ff3b30;margin-bottom:8px">HEIC 图像解码失败</p>
+        <p style="font-size:13px;margin-bottom:20px">${escapeHtml(err.message)}</p>
+        <button class="btn btn-primary" id="btn-modal-dl">⬇️ 立即下载该文件</button>
+      </div>`;
+    dom.previewBody.querySelector('#btn-modal-dl')?.addEventListener('click', () => downloadFile(file.key));
+  }
+}
+
+async function renderExcelPreview(file, mediaUrl) {
+  dom.previewBody.innerHTML = `
+    <div class="preview-loading-tip">
+      <div class="spinner-modern"></div>
+      <p>正在解析 Excel 表格数据...</p>
+    </div>`;
+
+  try {
+    await loadScript('/vendor/xlsx.full.min.js');
+
+    let buffer = xlsxPreviewCache.get(file.key);
+    if (!buffer) {
+      const res = await apiFetch(mediaUrl);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      buffer = await res.arrayBuffer();
+      xlsxPreviewCache.set(file.key, buffer);
+    }
+
+    const workbook = window.XLSX.read(buffer, { type: 'array' });
+    const sheetNames = workbook.SheetNames || [];
+    if (sheetNames.length === 0) throw new Error('工作簿中无有效表格');
+
+    dom.previewBody.innerHTML = `
+      <div class="preview-xlsx-wrap">
+        <div class="xlsx-sheet-tabs" id="xlsx-sheet-tabs"></div>
+        <div class="xlsx-table-container" id="xlsx-table-container"></div>
+        <div class="xlsx-table-footer" id="xlsx-table-footer"></div>
+      </div>`;
+
+    const tabsWrap = dom.previewBody.querySelector('#xlsx-sheet-tabs');
+    const tableWrap = dom.previewBody.querySelector('#xlsx-table-container');
+    const footerWrap = dom.previewBody.querySelector('#xlsx-table-footer');
+
+    function showSheet(name) {
+      tabsWrap.querySelectorAll('.xlsx-sheet-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.name === name);
+      });
+
+      const worksheet = workbook.Sheets[name];
+      if (!worksheet) {
+        tableWrap.innerHTML = '<div style="padding:20px;color:#86868b">该工作表为空</div>';
+        footerWrap.textContent = '';
+        return;
+      }
+
+      const data = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+      const maxRows = 500;
+      const displayRows = data.slice(0, maxRows);
+
+      let html = '<table class="xlsx-table"><tbody>';
+      displayRows.forEach((row, rIdx) => {
+        html += '<tr>';
+        const isHeader = rIdx === 0;
+        row.forEach(cell => {
+          const tag = isHeader ? 'th' : 'td';
+          html += `<${tag}>${escapeHtml(String(cell != null ? cell : ''))}</${tag}>`;
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+
+      tableWrap.innerHTML = html;
+      footerWrap.textContent = data.length > maxRows
+        ? `当前展示前 ${maxRows} 行（共 ${data.length} 行），如需完整编辑请下载文件`
+        : `共 ${data.length} 行`;
+    }
+
+    sheetNames.forEach((sName, idx) => {
+      const tab = document.createElement('button');
+      tab.className = `xlsx-sheet-tab ${idx === 0 ? 'active' : ''}`;
+      tab.textContent = sName;
+      tab.dataset.name = sName;
+      tab.addEventListener('click', () => showSheet(sName));
+      tabsWrap.appendChild(tab);
+    });
+
+    showSheet(sheetNames[0]);
+
+  } catch (err) {
+    dom.previewBody.innerHTML = `
+      <div style="text-align:center;padding:48px 20px;color:#86868b">
+        <div style="margin-bottom:16px">${renderSvgIcon('excel', 56)}</div>
+        <p style="font-size:15px;color:#ff3b30;margin-bottom:8px">Excel 表格解析失败</p>
+        <p style="font-size:13px;margin-bottom:20px">${escapeHtml(err.message)}</p>
+        <button class="btn btn-primary" id="btn-modal-dl">⬇️ 立即下载该文件</button>
+      </div>`;
+    dom.previewBody.querySelector('#btn-modal-dl')?.addEventListener('click', () => downloadFile(file.key));
+  }
+}
+
+async function renderZipPreview(file, mediaUrl) {
+  dom.previewBody.innerHTML = `
+    <div class="preview-loading-tip">
+      <div class="spinner-modern"></div>
+      <p>正在读取压缩包目录树...</p>
+    </div>`;
+
+  try {
+    await loadScript('/vendor/jszip.min.js');
+    const res = await apiFetch(mediaUrl);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+
+    const zip = await window.JSZip.loadAsync(blob);
+    const entries = [];
+    let totalUncompressed = 0;
+    let fileCount = 0;
+    let folderCount = 0;
+
+    zip.forEach((relPath, entry) => {
+      const isDir = entry.dir || relPath.endsWith('/');
+      const size = entry._data ? (entry._data.uncompressedSize || 0) : 0;
+      if (isDir) {
+        folderCount++;
+      } else {
+        fileCount++;
+        totalUncompressed += size;
+      }
+      entries.push({
+        path: relPath,
+        isDir,
+        size,
+        date: entry.date,
+      });
+    });
+
+    entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.path.localeCompare(b.path);
+    });
+
+    dom.previewBody.innerHTML = `
+      <div class="preview-zip-wrap">
+        <div class="zip-summary-header">
+          <span class="zip-summary-badge">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 8v13H3V8"/>
+              <path d="M1 3h22v5H1z"/>
+              <path d="M10 12h4"/>
+            </svg>
+            包含 ${fileCount} 个文件，${folderCount} 个目录 · 解压约 ${formatSize(totalUncompressed)}
+          </span>
+          <button class="btn btn-secondary btn-xs" id="btn-zip-dl">下载整包</button>
+        </div>
+        <div class="zip-list-container" id="zip-list-container"></div>
+      </div>`;
+
+    dom.previewBody.querySelector('#btn-zip-dl')?.addEventListener('click', () => downloadFile(file.key));
+
+    const listWrap = dom.previewBody.querySelector('#zip-list-container');
+    let listHtml = '';
+    entries.forEach(e => {
+      const icon = e.isDir ? renderSvgIcon('folder', 16) : renderSvgIcon(getFileType(e.path), 16);
+      const sizeText = e.isDir ? '文件夹' : formatSize(e.size);
+      const dateText = e.date ? formatDate(e.date.toISOString()) : '';
+      listHtml += `
+        <div class="zip-entry-row">
+          <div class="zip-entry-left">
+            ${icon}
+            <span title="${escapeHtml(e.path)}">${escapeHtml(e.path)}</span>
+          </div>
+          <div class="zip-entry-meta">
+            <span>${sizeText}</span>
+            ${dateText ? `<span style="margin-left:12px">${dateText}</span>` : ''}
+          </div>
+        </div>`;
+    });
+    listWrap.innerHTML = listHtml;
+
+  } catch (err) {
+    dom.previewBody.innerHTML = `
+      <div style="text-align:center;padding:48px 20px;color:#86868b">
+        <div style="margin-bottom:16px">${renderSvgIcon('zip', 56)}</div>
+        <p style="font-size:15px;color:#ff3b30;margin-bottom:8px">压缩包解析失败</p>
+        <p style="font-size:13px;margin-bottom:20px">${escapeHtml(err.message)}</p>
+        <button class="btn btn-primary" id="btn-modal-dl">⬇️ 立即下载该文件</button>
+      </div>`;
+    dom.previewBody.querySelector('#btn-modal-dl')?.addEventListener('click', () => downloadFile(file.key));
+  }
+}
+
+// ─── 文件在线预览 Modal (支持全端多格式解析) ──────────────────────────────────
 async function openPreview(file) {
   state.previewItem = file;
   const name = getFileName(file.key);
   const type = getFileType(file.key);
+  const ext = getExt(file.key);
 
   dom.previewIcon.innerHTML = renderSvgIcon(type, 26);
   dom.previewFilename.textContent = name;
@@ -1261,7 +1798,10 @@ async function openPreview(file) {
 
   const mediaUrl = buildMediaUrl(file.key);
 
-  if (type === 'image') {
+  if (ext === 'heic' || ext === 'heif') {
+    await renderHeicPreview(file, mediaUrl);
+
+  } else if (type === 'image') {
     const img = document.createElement('img');
     img.alt = name;
     img.src = mediaUrl;
@@ -1291,7 +1831,6 @@ async function openPreview(file) {
     dom.previewBody.appendChild(wrap);
 
   } else if (type === 'text' || type === 'code') {
-    // 优先命中本地内存缓存，0 网络请求
     if (textPreviewCache.has(file.key)) {
       const wrap = document.createElement('div');
       wrap.className = 'preview-text-wrap';
@@ -1324,11 +1863,27 @@ async function openPreview(file) {
     }
 
   } else if (type === 'pdf') {
-    const iframe = document.createElement('iframe');
-    iframe.className = 'preview-pdf';
-    iframe.src = mediaUrl;
-    iframe.title = name;
-    dom.previewBody.appendChild(iframe);
+    await renderPdfPreview(file, mediaUrl);
+
+  } else if (type === 'word') {
+    if (ext === 'docx') {
+      await renderDocxPreview(file, mediaUrl);
+    } else {
+      dom.previewBody.innerHTML = `
+        <div style="text-align:center;padding:48px 20px;color:#86868b">
+          <div style="margin-bottom:16px">${renderSvgIcon('word', 56)}</div>
+          <p style="font-size:16px;color:#e5e5ea;font-weight:600;margin-bottom:8px">旧版 Word (.doc) 格式暂不支持在线直接预览</p>
+          <p style="font-size:13px;color:#86868b;margin-bottom:24px">.doc 属于早期复合二进制格式，建议另存为新版 .docx 格式上传预览，或直接下载在本地查看。</p>
+          <button class="btn btn-primary" id="btn-modal-dl">⬇️ 立即下载该文件</button>
+        </div>`;
+      dom.previewBody.querySelector('#btn-modal-dl')?.addEventListener('click', () => downloadFile(file.key));
+    }
+
+  } else if (type === 'excel') {
+    await renderExcelPreview(file, mediaUrl);
+
+  } else if (type === 'zip') {
+    await renderZipPreview(file, mediaUrl);
 
   } else {
     dom.previewBody.innerHTML = `
@@ -1343,6 +1898,10 @@ async function openPreview(file) {
 }
 
 function closePreview() {
+  if (currentPdfCleanup) {
+    currentPdfCleanup();
+    currentPdfCleanup = null;
+  }
   dom.previewModal.hidden = true;
   document.body.style.overflow = '';
   dom.previewBody.querySelectorAll('video, audio').forEach(el => {
@@ -1382,6 +1941,277 @@ dom.btnPreviewDel.addEventListener('click', async () => {
   } catch (err) {
     showToast('网络错误：' + err.message, 'error');
   }
+});
+
+// ─── 文件与文件夹重命名系统 ──────────────────────────────────────────────────
+let currentRenamingKey = null;
+
+function openRenameModal() {
+  if (state.selectedKeys.size !== 1) return;
+  const key = Array.from(state.selectedKeys)[0];
+  currentRenamingKey = key;
+  const isFolder = key.endsWith('/');
+  const curName = isFolder ? getFileName(key.slice(0, -1)) : getFileName(key);
+
+  dom.renameTitle.textContent = isFolder ? '重命名文件夹' : '重命名文件';
+  dom.renameInput.value = curName;
+  dom.renameError.hidden = true;
+  dom.renameModal.hidden = false;
+  document.body.style.overflow = 'hidden';
+
+  setTimeout(() => {
+    dom.renameInput.focus();
+    if (!isFolder && curName.includes('.')) {
+      const dotIdx = curName.lastIndexOf('.');
+      dom.renameInput.setSelectionRange(0, dotIdx);
+    } else {
+      dom.renameInput.select();
+    }
+  }, 50);
+}
+
+function closeRenameModal() {
+  dom.renameModal.hidden = true;
+  document.body.style.overflow = '';
+  currentRenamingKey = null;
+  dom.renameError.hidden = true;
+}
+
+async function submitRename(e) {
+  if (e) e.preventDefault();
+  if (!currentRenamingKey) return;
+
+  const key = currentRenamingKey;
+  const isFolder = key.endsWith('/');
+  const curName = isFolder ? getFileName(key.slice(0, -1)) : getFileName(key);
+  const newName = dom.renameInput.value.trim();
+
+  if (!newName) {
+    dom.renameError.textContent = '名称不能为空';
+    dom.renameError.hidden = false;
+    return;
+  }
+  if (/[/\\:*?"<>|]/.test(newName)) {
+    dom.renameError.textContent = '名称不能包含 / \\ : * ? " < > | 等非法字符';
+    dom.renameError.hidden = false;
+    return;
+  }
+  if (newName === curName) {
+    closeRenameModal();
+    return;
+  }
+
+  let toKey = '';
+  let items = [];
+  if (isFolder) {
+    const parentPrefix = key.slice(0, key.lastIndexOf('/', key.length - 2) + 1);
+    toKey = parentPrefix + newName + '/';
+
+    if (state.allObjects) {
+      items = state.allObjects
+        .filter(o => o.key.startsWith(key))
+        .map(o => ({ from: o.key, to: toKey + o.key.slice(key.length) }));
+    }
+    if (items.length === 0) {
+      items = [{ from: key, to: toKey }];
+    }
+  } else {
+    const parentPrefix = key.includes('/') ? key.slice(0, key.lastIndexOf('/') + 1) : '';
+    toKey = parentPrefix + newName;
+    items = [{ from: key, to: toKey }];
+  }
+
+  dom.btnRenameSubmit.disabled = true;
+  dom.btnRenameSubmit.textContent = '重命名中...';
+
+  try {
+    const res = await apiFetch(`${API.file}?action=move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '重命名失败');
+    }
+
+    optimisticMoveItems([{ from: key, to: toKey, isFolder }]);
+    showToast('重命名成功', 'success');
+    closeRenameModal();
+  } catch (err) {
+    dom.renameError.textContent = err.message;
+    dom.renameError.hidden = false;
+  } finally {
+    dom.btnRenameSubmit.disabled = false;
+    dom.btnRenameSubmit.textContent = '确认修改';
+  }
+}
+
+dom.btnBatchRename?.addEventListener('click', openRenameModal);
+dom.btnRenameCancel?.addEventListener('click', closeRenameModal);
+dom.renameForm?.addEventListener('submit', submitRename);
+dom.renameModal?.addEventListener('click', e => {
+  if (e.target === dom.renameModal) closeRenameModal();
+});
+
+// ─── 文件与文件夹移动系统 ──────────────────────────────────────────────────
+let selectedMoveDest = null;
+
+function getAllFolderPaths() {
+  const folders = new Set();
+  folders.add(''); // 根目录
+  if (state.allObjects) {
+    for (const obj of state.allObjects) {
+      const parts = obj.key.split('/');
+      let cur = '';
+      const limit = obj.key.endsWith('/') ? parts.length - 1 : parts.length - 1;
+      for (let i = 0; i < limit; i++) {
+        cur += parts[i] + '/';
+        folders.add(cur);
+      }
+    }
+  }
+  state.folders.forEach(f => {
+    folders.add(f.endsWith('/') ? f : f + '/');
+  });
+  return Array.from(folders).sort();
+}
+
+function openMoveModal() {
+  if (state.selectedKeys.size === 0) return;
+  const selected = Array.from(state.selectedKeys);
+  selectedMoveDest = null;
+
+  dom.moveSubtitle.textContent = `将移动选中的 ${selected.length} 个项目至目标目录`;
+
+  let totalFiles = 0;
+  selected.forEach(k => {
+    if (k.endsWith('/')) {
+      if (state.allObjects) {
+        totalFiles += state.allObjects.filter(o => o.key.startsWith(k)).length;
+      } else {
+        totalFiles += 1;
+      }
+    } else {
+      totalFiles += 1;
+    }
+  });
+
+  dom.moveQuotaTip.innerHTML = `💡 该操作将移动 ${totalFiles} 个对象（预计物理消耗 ${totalFiles} 次写入额度，额外 List 扫描消耗严格为 0）`;
+
+  const allFolders = getAllFolderPaths();
+  let treeHtml = '';
+
+  allFolders.forEach(f => {
+    const isRoot = f === '';
+    const depth = isRoot ? 0 : f.split('/').filter(Boolean).length;
+    const displayName = isRoot ? '根目录 /' : getFileName(f.slice(0, -1));
+    const padLeft = 12 + depth * 16;
+
+    const isCurrent = f === state.currentPrefix;
+    let isSelfOrChild = false;
+    for (const sel of selected) {
+      if (sel.endsWith('/') && (f === sel || f.startsWith(sel))) {
+        isSelfOrChild = true;
+        break;
+      }
+    }
+
+    const disabled = isCurrent || isSelfOrChild;
+    const badge = isCurrent ? ' (当前目录)' : (isSelfOrChild ? ' (不可移入自身)' : '');
+
+    treeHtml += `
+      <div class="move-tree-item ${disabled ? 'disabled' : ''}" data-path="${escapeHtml(f)}" style="padding-left:${padLeft}px">
+        ${renderSvgIcon('folder', 16)}
+        <span>${escapeHtml(displayName)}</span>
+        <span style="font-size:12px;color:#86868b;margin-left:4px">${badge}</span>
+      </div>`;
+  });
+
+  dom.moveFolderTree.innerHTML = treeHtml;
+  dom.btnMoveConfirm.disabled = true;
+  dom.moveModal.hidden = false;
+  document.body.style.overflow = 'hidden';
+
+  dom.moveFolderTree.querySelectorAll('.move-tree-item:not(.disabled)').forEach(el => {
+    el.addEventListener('click', () => {
+      dom.moveFolderTree.querySelectorAll('.move-tree-item').forEach(i => i.classList.remove('selected'));
+      el.classList.add('selected');
+      selectedMoveDest = el.dataset.path;
+      dom.btnMoveConfirm.disabled = false;
+    });
+  });
+}
+
+function closeMoveModal() {
+  dom.moveModal.hidden = true;
+  document.body.style.overflow = '';
+  selectedMoveDest = null;
+}
+
+async function submitMove() {
+  if (selectedMoveDest === null || state.selectedKeys.size === 0) return;
+  const destPrefix = selectedMoveDest;
+  const selected = Array.from(state.selectedKeys);
+
+  const items = [];
+  const mappings = [];
+
+  for (const k of selected) {
+    const isFolder = k.endsWith('/');
+    if (isFolder) {
+      const folderName = getFileName(k.slice(0, -1)) + '/';
+      const toKey = destPrefix + folderName;
+      mappings.push({ from: k, to: toKey, isFolder: true });
+
+      if (state.allObjects) {
+        state.allObjects
+          .filter(o => o.key.startsWith(k))
+          .forEach(o => {
+            items.push({ from: o.key, to: toKey + o.key.slice(k.length) });
+          });
+      }
+      if (!items.some(i => i.from === k)) {
+        items.push({ from: k, to: toKey });
+      }
+    } else {
+      const fileName = getFileName(k);
+      const toKey = destPrefix + fileName;
+      mappings.push({ from: k, to: toKey, isFolder: false });
+      items.push({ from: k, to: toKey });
+    }
+  }
+
+  dom.btnMoveConfirm.disabled = true;
+  dom.btnMoveConfirm.textContent = '移动中...';
+
+  try {
+    const res = await apiFetch(`${API.file}?action=move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '移动失败');
+    }
+
+    optimisticMoveItems(mappings);
+    showToast(`成功移动 ${selected.length} 个项目`, 'success');
+    closeMoveModal();
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    dom.btnMoveConfirm.disabled = false;
+    dom.btnMoveConfirm.textContent = '确认移动';
+  }
+}
+
+dom.btnBatchMove?.addEventListener('click', openMoveModal);
+dom.btnMoveCancel?.addEventListener('click', closeMoveModal);
+dom.btnMoveConfirm?.addEventListener('click', submitMove);
+dom.moveModal?.addEventListener('click', e => {
+  if (e.target === dom.moveModal) closeMoveModal();
 });
 
 // ─── 文件上传系统 ──────────────────────────────────────────────────────────────
