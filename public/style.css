@@ -1256,13 +1256,15 @@ input::-webkit-caps-lock-indicator {
   }
 
   .toolbar-left {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+    display: flex;
+    flex-wrap: wrap;
     width: 100%;
     gap: 8px;
   }
 
   .toolbar-left .btn {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 110px;
     padding: 9px 8px;
     font-size: 12.5px;
     justify-content: center;

@@ -267,7 +267,7 @@ function optimisticMoveItems(mappings) {
 
   // 清空内存目录缓存池以基于原地更新后的 state.allObjects 重新渲染，0 次网络请求
   dirCache.clear();
-  sessionStorage.removeItem(DIR_CACHE_KEY);
+  sessionStorage.removeItem(STORAGE_CACHE_KEY);
 
   if (state.isVirtualTree && state.allObjects) {
     const vData = extractVirtualDir(state.currentPrefix);
@@ -886,6 +886,7 @@ function toggleItemSelection(key) {
 function updateSelectionUI() {
   const totalItems = state.folders.length + state.files.length;
   const count = state.selectedKeys.size;
+  const hasSelection = count > 0;
 
   // 更新表头全选框状态
   if (dom.selectAllCheckbox) {
@@ -893,27 +894,31 @@ function updateSelectionUI() {
     dom.selectAllCheckbox.indeterminate = count > 0 && count < totalItems;
   }
 
-  // 更新工具栏批量下载按钮
+  // 1. 下载按钮：必须勾选后才弹出显示
   if (dom.btnBatchDownload) {
-    dom.btnBatchDownload.disabled = count === 0;
-    dom.textBatchDownload.textContent = count > 0 ? `下载 (${count})` : '下载';
+    dom.btnBatchDownload.hidden = !hasSelection;
+    dom.btnBatchDownload.disabled = !hasSelection;
+    dom.textBatchDownload.textContent = count > 1 ? `下载 (${count})` : '下载';
   }
 
-  // 更新工具栏重命名按钮（仅勾选 1 项时显示）
+  // 2. 删除按钮：必须勾选后才弹出显示
+  if (dom.btnBatchDelete) {
+    dom.btnBatchDelete.hidden = !hasSelection;
+    dom.btnBatchDelete.disabled = !hasSelection;
+    dom.textBatchDelete.textContent = count > 1 ? `删除 (${count})` : '删除';
+  }
+
+  // 3. 移动按钮：必须勾选后才弹出显示
+  if (dom.btnBatchMove) {
+    dom.btnBatchMove.hidden = !hasSelection;
+    dom.btnBatchMove.disabled = !hasSelection;
+    dom.textBatchMove.textContent = count > 1 ? `移动 (${count})` : '移动';
+  }
+
+  // 4. 重命名按钮：仅在勾选 1 项时激活弹出
   if (dom.btnBatchRename) {
     dom.btnBatchRename.hidden = count !== 1;
-  }
-
-  // 更新工具栏批量移动按钮
-  if (dom.btnBatchMove) {
-    dom.btnBatchMove.disabled = count === 0;
-    dom.textBatchMove.textContent = count > 0 ? `移动 (${count})` : '移动到';
-  }
-
-  // 更新工具栏批量删除按钮
-  if (dom.btnBatchDelete) {
-    dom.btnBatchDelete.disabled = count === 0;
-    dom.textBatchDelete.textContent = count > 0 ? `删除 (${count})` : '删除';
+    dom.btnBatchRename.disabled = count !== 1;
   }
 }
 
@@ -2007,6 +2012,13 @@ async function submitRename(e) {
     const parentPrefix = key.slice(0, key.lastIndexOf('/', key.length - 2) + 1);
     toKey = parentPrefix + newName + '/';
 
+    // 检查当前目录下是否已存在同名文件夹
+    if (state.folders.includes(toKey)) {
+      dom.renameError.textContent = '当前目录下已存在同名文件夹';
+      dom.renameError.hidden = false;
+      return;
+    }
+
     if (state.allObjects) {
       items = state.allObjects
         .filter(o => o.key.startsWith(key))
@@ -2018,6 +2030,14 @@ async function submitRename(e) {
   } else {
     const parentPrefix = key.includes('/') ? key.slice(0, key.lastIndexOf('/') + 1) : '';
     toKey = parentPrefix + newName;
+
+    // 检查当前目录下是否已存在同名文件
+    if (state.files.some(f => f.key === toKey)) {
+      dom.renameError.textContent = '当前目录下已存在同名文件';
+      dom.renameError.hidden = false;
+      return;
+    }
+
     items = [{ from: key, to: toKey }];
   }
 
@@ -2577,6 +2597,8 @@ dom.btnClosePanel.addEventListener('click', () => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (!dom.previewModal.hidden) { closePreview(); return; }
+    if (!dom.renameModal.hidden)  { closeRenameModal(); return; }
+    if (!dom.moveModal.hidden)    { closeMoveModal(); return; }
     if (!dom.mkdirModal.hidden)   { dom.mkdirModal.hidden = true; return; }
     if (!dom.confirmModal.hidden) { dom.confirmModal.hidden = true; return; }
   }

@@ -532,12 +532,18 @@ async function handleMove(request, env, context) {
       // 检查源对象
       const srcObj = await env.R2_BUCKET.get(fromKey);
       if (!srcObj) {
+        // 如果是目录且对象存储中无独立 0 字节实体（纯虚拟路径），直接记录成功并继续
+        if (fromKey.endsWith('/')) {
+          results.push({ from: fromKey, to: toKey, success: true, virtualFolder: true });
+          continue;
+        }
         results.push({ from: fromKey, to: toKey, success: false, error: '源文件不存在' });
         continue;
       }
 
-      // 流式写入目标 key
-      await env.R2_BUCKET.put(toKey, srcObj.body, {
+      // 对 0 字节对象或空流写入空字符串，规避 ReadableStream 读空异常
+      const body = (srcObj.size === 0 || !srcObj.body) ? '' : srcObj.body;
+      await env.R2_BUCKET.put(toKey, body, {
         httpMetadata: srcObj.httpMetadata,
         customMetadata: srcObj.customMetadata,
       });
