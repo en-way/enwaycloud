@@ -20,7 +20,8 @@ const MIME_MAP = {
   // 图片
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
   gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
-  bmp: 'image/bmp', ico: 'image/x-icon',
+  bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+  tiff: 'image/tiff', heic: 'image/heic', heif: 'image/heif',
   // 视频
   mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
   avi: 'video/x-msvideo', mkv: 'video/x-matroska',
@@ -29,6 +30,12 @@ const MIME_MAP = {
   flac: 'audio/flac', aac: 'audio/aac', m4a: 'audio/mp4',
   // 文档/代码
   pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   txt: 'text/plain; charset=utf-8',
   md: 'text/markdown; charset=utf-8',
   html: 'text/html; charset=utf-8',
@@ -63,7 +70,10 @@ const MIME_MAP = {
  */
 function inferContentType(key, httpMetadata = {}) {
   if (httpMetadata.contentType) return httpMetadata.contentType;
-  const ext = key.split('.').pop().toLowerCase();
+  const fileName = key.split('/').pop() || '';
+  const dotIdx = fileName.lastIndexOf('.');
+  if (dotIdx <= 0) return 'application/octet-stream';
+  const ext = fileName.slice(dotIdx + 1).toLowerCase();
   return MIME_MAP[ext] || 'application/octet-stream';
 }
 
@@ -92,37 +102,48 @@ function jsonResponse(data, status = 200) {
 }
 
 /**
- * 清除 Cloudflare Edge 边缘缓存 (去除 auth 参数，同步清理单文件与关联目录列表缓存)
+ * 清除 Cloudflare Edge 边缘缓存 (支持单 key 或批量 key 数组，自动去重 URL)
  * 使用 context.waitUntil 守护异步淘汰，杜绝 Worker 实例提前休眠导致任务丢失
  * @param {object} context
  * @param {string} requestUrl
- * @param {string} key
+ * @param {string|string[]} keysOrKey
  */
-function purgeEdgeCache(context, requestUrl, key) {
+function purgeEdgeCache(context, requestUrl, keysOrKey) {
   if (typeof caches === 'undefined') return;
   try {
     const cache = caches.default;
-    const promises = [];
+    const keys = Array.isArray(keysOrKey) ? keysOrKey : [keysOrKey];
+    const urlSet = new Set();
 
-    // 1. 清理单文件响应缓存
-    const fileUrl = new URL(requestUrl);
-    fileUrl.pathname = '/api/file';
-    fileUrl.search = `?key=${encodeURIComponent(key)}`;
-    promises.push(cache.delete(new Request(fileUrl.toString(), { method: 'GET' })));
+    const baseAllUrl = new URL(requestUrl);
+    baseAllUrl.pathname = '/api/files';
+    baseAllUrl.search = '?all=1';
+    urlSet.add(baseAllUrl.toString());
 
-    // 2. 清理受影响的 /api/files 目录缓存与 ?all=1 全盘缓存
-    const dirUrl = new URL(requestUrl);
-    dirUrl.pathname = '/api/files';
-    dirUrl.search = '?all=1';
-    promises.push(cache.delete(new Request(dirUrl.toString(), { method: 'GET' })));
+    for (const key of keys) {
+      if (!key) continue;
+      // 1. 单文件响应缓存
+      const fileUrl = new URL(requestUrl);
+      fileUrl.pathname = '/api/file';
+      fileUrl.search = `?key=${encodeURIComponent(key)}`;
+      urlSet.add(fileUrl.toString());
 
-    const prefix = key.includes('/') ? key.substring(0, key.lastIndexOf('/') + 1) : '';
-    dirUrl.search = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
-    promises.push(cache.delete(new Request(dirUrl.toString(), { method: 'GET' })));
-    if (!prefix) {
-      dirUrl.search = '?prefix=';
-      promises.push(cache.delete(new Request(dirUrl.toString(), { method: 'GET' })));
+      // 2. 所在目录缓存
+      const dirUrl = new URL(requestUrl);
+      dirUrl.pathname = '/api/files';
+      const trimmed = key.endsWith('/') ? key.slice(0, -1) : key;
+      const prefix = trimmed.includes('/') ? trimmed.substring(0, trimmed.lastIndexOf('/') + 1) : '';
+      dirUrl.search = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
+      urlSet.add(dirUrl.toString());
+      if (!prefix) {
+        dirUrl.search = '?prefix=';
+        urlSet.add(dirUrl.toString());
+      }
     }
+
+    const promises = Array.from(urlSet).map(u =>
+      cache.delete(new Request(u, { method: 'GET' }))
+    );
 
     if (context && typeof context.waitUntil === 'function') {
       context.waitUntil(Promise.all(promises).catch(() => {}));
@@ -452,49 +473,50 @@ async function handleDelete(request, env, context) {
 
 /**
  * POST /api/file?action=batchDelete
- * 批量删除文件（单次原子操作，减少 98% Functions 调用与 R2 开销）
- * Body: { keys: string[] }
+ * 批量删除文件与递归删除非空文件夹（单次原子操作，0 额外 Class A list 开销）
+ * Body: { keys: string[], expandFolders?: boolean }
  */
 async function handleBatchDelete(request, env, context) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { keys } = body;
+    const { keys, expandFolders } = body;
 
     if (!Array.isArray(keys) || keys.length === 0) {
       return jsonResponse({ error: '缺少有效的 keys 数组' }, 400);
     }
 
-    // 安全限制：单次批量最多删除 500 个项目（R2 原生批量上限为 1000）
-    const validKeys = keys
-      .map(sanitizeKey)
-      .filter(k => k.length > 0)
-      .slice(0, 500);
+    const keySet = new Set(
+      keys.map(sanitizeKey).filter(k => k.length > 0)
+    );
 
-    if (validKeys.length === 0) {
+    if (keySet.size === 0) {
       return jsonResponse({ error: 'keys 列表中无有效项' }, 400);
     }
 
-    // 若包含文件夹，检查该文件夹是否为空（或其子项是否已被包含在本次批量删除列表中）
-    const folderKeys = validKeys.filter(k => k.endsWith('/'));
-    for (const fKey of folderKeys) {
-      const listed = await env.R2_BUCKET.list({ prefix: fKey, limit: 10 });
-      const hasOtherFiles = (listed.objects || []).some(o => o.key !== fKey && !validKeys.includes(o.key)) ||
-                            (listed.delimitedPrefixes || []).length > 0;
-      if (hasOtherFiles) {
-        return jsonResponse({ error: `文件夹 "${fKey}" 内部还有未选中的文件，无法直接删除` }, 409);
+    // 仅在前端未持有全盘虚拟树（超大盘降级模式 expandFolders=true）且包含目录时，由后端展开目录子项
+    if (expandFolders) {
+      const folderKeys = Array.from(keySet).filter(k => k.endsWith('/'));
+      for (const fKey of folderKeys) {
+        const listed = await env.R2_BUCKET.list({ prefix: fKey, limit: 1000 });
+        for (const obj of (listed.objects || [])) {
+          keySet.add(obj.key);
+        }
       }
     }
 
-    // R2 原生批量原子删除：delete(keys: string[])，仅计为 1 次原子操作且免费
+    const validKeys = Array.from(keySet).slice(0, 1000);
+
+    // R2 原生批量原子删除：delete(keys: string[])，单次最高 1000 项，免费且原子执行
     await env.R2_BUCKET.delete(validKeys);
 
-    // 异步清理边缘缓存 (使用 context.waitUntil 守护)
-    validKeys.forEach(k => purgeEdgeCache(context, request.url, k));
+    // 批量去重清理边缘缓存
+    purgeEdgeCache(context, request.url, validKeys);
 
     return jsonResponse({
       success: true,
       message: `成功批量删除 ${validKeys.length} 个项目`,
       deletedCount: validKeys.length,
+      deletedKeys: validKeys,
     });
   } catch (err) {
     console.error('[file.js] batchDelete error:', err);
@@ -505,7 +527,7 @@ async function handleBatchDelete(request, env, context) {
 /**
  * POST /api/file?action=move
  * 移动/重命名文件或文件夹（单次或批量流式复制）
- * Body: { items: [{ from: string, to: string }] }
+ * Body: { items: [{ from: string, to: string, expandFolder?: boolean }] }
  */
 async function handleMove(request, env, context) {
   try {
@@ -516,13 +538,38 @@ async function handleMove(request, env, context) {
       return jsonResponse({ error: '缺少有效的 items 数组' }, 400);
     }
 
-    // 限制单次移动上限 500 个项目
-    const validItems = items.slice(0, 500);
-    const results = [];
-
-    for (const item of validItems) {
+    // 若存在降级模式下的未展开文件夹（expandFolder=true），后端自动按前缀展开
+    const expandedItems = [];
+    for (const item of items.slice(0, 500)) {
       const fromKey = sanitizeKey(item.from);
       const toKey = sanitizeKey(item.to);
+      if (!fromKey || !toKey) continue;
+
+      if (item.expandFolder && fromKey.endsWith('/') && toKey.endsWith('/')) {
+        const listed = await env.R2_BUCKET.list({ prefix: fromKey, limit: 1000 });
+        const objs = listed.objects || [];
+        if (objs.length === 0) {
+          expandedItems.push({ from: fromKey, to: toKey });
+        } else {
+          for (const obj of objs) {
+            expandedItems.push({
+              from: obj.key,
+              to: toKey + obj.key.slice(fromKey.length),
+            });
+          }
+        }
+      } else {
+        expandedItems.push({ from: fromKey, to: toKey });
+      }
+    }
+
+    const validItems = expandedItems.slice(0, 500);
+    const results = [];
+    const affectedCacheKeys = [];
+
+    for (const item of validItems) {
+      const fromKey = item.from;
+      const toKey = item.to;
 
       if (!fromKey || !toKey || fromKey === toKey) {
         results.push({ from: item.from, to: item.to, success: false, error: '无效的源路径或目标路径' });
@@ -542,8 +589,8 @@ async function handleMove(request, env, context) {
       }
 
       // 对 0 字节对象或空流写入空字符串，规避 ReadableStream 读空异常
-      const body = (srcObj.size === 0 || !srcObj.body) ? '' : srcObj.body;
-      await env.R2_BUCKET.put(toKey, body, {
+      const objBody = (srcObj.size === 0 || !srcObj.body) ? '' : srcObj.body;
+      await env.R2_BUCKET.put(toKey, objBody, {
         httpMetadata: srcObj.httpMetadata,
         customMetadata: srcObj.customMetadata,
       });
@@ -551,18 +598,31 @@ async function handleMove(request, env, context) {
       // 删除原 key（免费操作）
       await env.R2_BUCKET.delete(fromKey);
 
-      // 清理 Edge Cache
-      purgeEdgeCache(context, request.url, fromKey);
-      purgeEdgeCache(context, request.url, toKey);
-
+      affectedCacheKeys.push(fromKey, toKey);
       results.push({ from: fromKey, to: toKey, success: true });
     }
 
+    if (affectedCacheKeys.length > 0) {
+      purgeEdgeCache(context, request.url, affectedCacheKeys);
+    }
+
     const movedCount = results.filter(r => r.success).length;
+    const failedCount = results.length - movedCount;
+
+    if (movedCount === 0 && failedCount > 0) {
+      return jsonResponse({
+        success: false,
+        error: results[0]?.error || '移动失败，未找到源对象',
+        movedCount: 0,
+        results,
+      }, 404);
+    }
+
     return jsonResponse({
       success: true,
       message: `成功移动/重命名 ${movedCount} 个项目`,
       movedCount,
+      failedCount,
       results,
     });
   } catch (err) {

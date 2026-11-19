@@ -17,11 +17,13 @@ const API = {
   file:  '/api/file',
 };
 
-// ─── sessionStorage 跨刷新目录持久化缓存 (10分钟保鲜) ──────────────────────────
+// ─── sessionStorage 跨刷新目录与全盘虚拟树持久化缓存 (10分钟保鲜) ────────────────
 const DIR_CACHE_TTL = 10 * 60 * 1000; // 10 分钟有效期
 const STORAGE_CACHE_KEY = 'r2_drive_cache_v2';
+const STORAGE_TREE_KEY  = 'r2_drive_tree_v2';
 const STORAGE_USAGE_KEY = 'r2_drive_usage_v1';
 const TOTAL_CAPACITY_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB 免费额度
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;       // 文本在线直接预览上限 2 MB（防超大文件卡死主线程）
 const inFlightRequests = new Map(); // key -> Promise
 
 function loadDirCacheFromStorage() {
@@ -51,13 +53,60 @@ function saveDirCacheToStorage() {
   } catch (_) {}
 }
 
+function loadVirtualTreeFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_TREE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (Date.now() - data.timestamp < DIR_CACHE_TTL && Array.isArray(data.allObjects)) {
+      return data;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function saveVirtualTreeToStorage() {
+  try {
+    if (state.allObjects) {
+      sessionStorage.setItem(STORAGE_TREE_KEY, JSON.stringify({
+        allObjects: state.allObjects,
+        isVirtualTree: state.isVirtualTree,
+        timestamp: Date.now(),
+      }));
+    } else {
+      sessionStorage.removeItem(STORAGE_TREE_KEY);
+    }
+  } catch (_) {}
+}
+
+// ─── 预览本地内存缓存池 (同一会话内重复查看零网络开销，零 Class A) ────────────────
+const textPreviewCache = new Map(); // key -> text content
+const heicPreviewCache = new Map(); // key -> ObjectUrl
+const xlsxPreviewCache = new Map(); // key -> ArrayBuffer
+
+function revokeHeicCacheKey(key) {
+  const url = heicPreviewCache.get(key);
+  if (url) {
+    try { URL.revokeObjectURL(url); } catch (_) {}
+    heicPreviewCache.delete(key);
+  }
+}
+
+function clearHeicCache() {
+  for (const url of heicPreviewCache.values()) {
+    try { URL.revokeObjectURL(url); } catch (_) {}
+  }
+  heicPreviewCache.clear();
+}
+
 function clearDirCache() {
   dirCache.clear();
   textPreviewCache.clear();
-  heicPreviewCache.clear();
+  clearHeicCache();
   xlsxPreviewCache.clear();
   try {
     sessionStorage.removeItem(STORAGE_CACHE_KEY);
+    sessionStorage.removeItem(STORAGE_TREE_KEY);
     sessionStorage.removeItem(STORAGE_USAGE_KEY);
   } catch (_) {}
   state.allObjects = null;
@@ -97,11 +146,6 @@ function extractVirtualDir(prefix) {
     files,
   };
 }
-
-// ─── 预览本地内存缓存池 (同一会话内重复查看零网络开销，零 Class A) ────────────────
-const textPreviewCache = new Map(); // key -> text content
-const heicPreviewCache = new Map(); // key -> ObjectUrl
-const xlsxPreviewCache = new Map(); // key -> ArrayBuffer
 
 // ─── 异步依赖脚本按需加载器 (仅在首次使用时拉取本地 vendor，0 首屏负担) ──────────────
 const loadedScripts = new Set();
@@ -145,12 +189,30 @@ function optimisticRemoveItems(keys) {
     });
   }
 
+  // 清理被删文件的预览内存缓存并释放 Blob URL
+  for (const k of removedSet) {
+    textPreviewCache.delete(k);
+    revokeHeicCacheKey(k);
+    xlsxPreviewCache.delete(k);
+  }
+  keys.forEach(k => {
+    textPreviewCache.delete(k);
+    revokeHeicCacheKey(k);
+    xlsxPreviewCache.delete(k);
+  });
+
   state.files = state.files.filter(f => !isRemoved(f.key));
   state.folders = state.folders.filter(f => !isRemoved(f));
 
-  // 1. 同步更新全盘虚拟树
+  // 1. 同步更新全盘虚拟树并持久化
   if (state.allObjects) {
     state.allObjects = state.allObjects.filter(o => !isRemoved(o.key));
+    saveVirtualTreeToStorage();
+    const vData = extractVirtualDir(state.currentPrefix);
+    if (vData) {
+      state.folders = vData.folders;
+      state.files = vData.files;
+    }
   }
 
   // 2. 同步更新各目录 cache (前缀级联清除)
@@ -168,7 +230,6 @@ function optimisticRemoveItems(keys) {
   state.totalUsedBytes = Math.max(0, state.totalUsedBytes - deletedBytes);
   updateStorageUI(state.totalUsedBytes);
 
-  keys.forEach(k => textPreviewCache.delete(k));
   state.selectedKeys.clear();
   updateSelectionUI();
   renderFileList();
@@ -186,6 +247,7 @@ function optimisticAddFolder(folderKey) {
         httpMetadata: { contentType: 'application/x-directory' },
         etag: null,
       });
+      saveVirtualTreeToStorage();
     }
   }
 
@@ -205,6 +267,8 @@ function optimisticAddFolder(folderKey) {
 
 function optimisticAddFile(key, size, mimeType) {
   textPreviewCache.delete(key);
+  revokeHeicCacheKey(key);
+  xlsxPreviewCache.delete(key);
   const oldFile = state.files.find(f => f.key === key) || (state.allObjects && state.allObjects.find(o => o.key === key));
   const diff = size - (oldFile ? (oldFile.size || 0) : 0);
 
@@ -216,10 +280,11 @@ function optimisticAddFile(key, size, mimeType) {
     etag: null,
   };
 
-  // 1. 同步更新全盘虚拟树
+  // 1. 同步更新全盘虚拟树并持久化
   if (state.allObjects) {
     state.allObjects = state.allObjects.filter(o => o.key !== key);
     state.allObjects.push(newFile);
+    saveVirtualTreeToStorage();
   }
 
   // 2. 更新当前视图与缓存
@@ -244,13 +309,16 @@ function optimisticMoveItems(mappings) {
   // mappings: Array<{ from: string, to: string, isFolder: boolean }>
   for (const m of mappings) {
     textPreviewCache.delete(m.from);
-    heicPreviewCache.delete(m.from);
+    revokeHeicCacheKey(m.from);
     xlsxPreviewCache.delete(m.from);
 
     if (m.isFolder) {
       if (state.allObjects) {
         state.allObjects.forEach(obj => {
           if (obj.key.startsWith(m.from)) {
+            textPreviewCache.delete(obj.key);
+            revokeHeicCacheKey(obj.key);
+            xlsxPreviewCache.delete(obj.key);
             obj.key = m.to + obj.key.slice(m.from.length);
           }
         });
@@ -265,7 +333,8 @@ function optimisticMoveItems(mappings) {
     }
   }
 
-  // 清空内存目录缓存池以基于原地更新后的 state.allObjects 重新渲染，0 次网络请求
+  // 持久化更新后的全盘虚拟树并清空单目录缓存池，0 次网络请求
+  saveVirtualTreeToStorage();
   dirCache.clear();
   sessionStorage.removeItem(STORAGE_CACHE_KEY);
 
@@ -276,9 +345,26 @@ function optimisticMoveItems(mappings) {
       state.files = vData.files;
     }
   } else {
-    const fromKeys = new Set(mappings.map(m => m.from));
-    state.files = state.files.filter(f => !fromKeys.has(f.key));
-    state.folders = state.folders.filter(f => !fromKeys.has(f));
+    // 降级模式（>1000 文件）：若为同目录重命名则原地更新，若为跨目录移动则移除
+    for (const m of mappings) {
+      const toPrefix = m.isFolder
+        ? m.to.slice(0, m.to.lastIndexOf('/', m.to.length - 2) + 1)
+        : (m.to.includes('/') ? m.to.slice(0, m.to.lastIndexOf('/') + 1) : '');
+      if (toPrefix === state.currentPrefix) {
+        if (m.isFolder) {
+          state.folders = state.folders.map(f => f === m.from ? m.to : f).sort();
+        } else {
+          const fObj = state.files.find(f => f.key === m.from);
+          if (fObj) fObj.key = m.to;
+        }
+      } else {
+        if (m.isFolder) {
+          state.folders = state.folders.filter(f => f !== m.from);
+        } else {
+          state.files = state.files.filter(f => f.key !== m.from);
+        }
+      }
+    }
   }
 
   state.selectedKeys.clear();
@@ -376,20 +462,21 @@ function renderSvgIcon(type, size = 20) {
 }
 
 // ─── 应用状态 ──────────────────────────────────────────────────────────────────
+const initialTree = loadVirtualTreeFromStorage();
 const state = {
-  password:      localStorage.getItem('drive_password') || '',
-  currentPrefix: '',
-  files:         [],
-  folders:       [],
-  selectedKeys:  new Set(),  // 勾选中的项目 key 集合
-  viewMode:      localStorage.getItem('view_mode') || 'list',
-  sortKey:       'name',
-  sortDir:       'asc',
-  uploadQueue:   [],
-  previewItem:   null,
-  loading:       false,
-  allObjects:    null,       // 全盘虚拟树平铺对象数组
-  isVirtualTree: false,      // 是否启用了全盘虚拟树模式 (整盘 1 次 Class A 搞定)
+  password:       localStorage.getItem('drive_password') || '',
+  currentPrefix:  '',
+  files:          [],
+  folders:        [],
+  selectedKeys:   new Set(),  // 勾选中的项目 key 集合
+  viewMode:       localStorage.getItem('view_mode') || 'list',
+  sortKey:        'name',
+  sortDir:        'asc',
+  uploadQueue:    [],
+  previewItem:    null,
+  loading:        false,
+  allObjects:     initialTree ? initialTree.allObjects : null,      // 全盘虚拟树平铺对象数组（跨刷新持久化）
+  isVirtualTree:  initialTree ? Boolean(initialTree.isVirtualTree) : false, // 是否启用了全盘虚拟树模式
   totalUsedBytes: parseInt(sessionStorage.getItem(STORAGE_USAGE_KEY) || '0', 10) || 0,
 };
 
@@ -786,9 +873,10 @@ async function loadFiles(prefix = '', forceRefresh = false) {
       const data = await res.json();
 
       if (data.all) {
-        // 成功载入全盘索引
+        // 成功载入全盘索引并持久化至 sessionStorage
         state.allObjects = data.objects || [];
         state.isVirtualTree = !data.truncated; // 如果 <= 1000 个文件，开启全盘虚拟树
+        saveVirtualTreeToStorage();
 
         const vData = extractVirtualDir(prefix);
         state.folders = vData ? vData.folders : [];
@@ -1250,13 +1338,19 @@ dom.btnMkdirCancel.addEventListener('click', () => {
 dom.mkdirForm.addEventListener('submit', async e => {
   e.preventDefault();
   const name = dom.mkdirInput.value.trim();
-  if (!name || name.includes('/') || name.includes('\\')) {
-    dom.mkdirError.textContent = '文件夹名称不能包含 / 或 \\';
+  if (!name || /[/\\:*?"<>|]/.test(name)) {
+    dom.mkdirError.textContent = '文件夹名称不能为空，且不能包含 / \\ : * ? " < > | 等非法字符';
     dom.mkdirError.hidden = false;
     return;
   }
 
   const key = state.currentPrefix + name + '/';
+  if (state.folders.includes(key)) {
+    dom.mkdirError.textContent = '当前目录下已存在同名文件夹';
+    dom.mkdirError.hidden = false;
+    return;
+  }
+
   dom.mkdirError.hidden = true;
 
   try {
@@ -1279,7 +1373,7 @@ dom.mkdirForm.addEventListener('submit', async e => {
   }
 });
 
-// ─── 工具栏集中操作：批量下载 & 批量删除 (原子批量接口，省 98% 请求) ─────────────
+// ─── 工具栏集中操作：批量下载 & 批量递归删除 (原子批量接口，0 额外 Class A) ────────
 dom.btnBatchDownload?.addEventListener('click', () => {
   if (state.selectedKeys.size === 0) return;
 
@@ -1303,32 +1397,63 @@ dom.btnBatchDelete?.addEventListener('click', async () => {
   const count = state.selectedKeys.size;
   if (count === 0) return;
 
-  const confirmed = await showConfirm(
-    '确认批量删除',
-    `确定要删除已选中的 ${count} 个项目吗？注意：非空文件夹无法删除。此操作无法撤销。`
-  );
+  const selected = Array.from(state.selectedKeys);
+  const expandedKeySet = new Set(selected);
+  let subItemCount = 0;
+
+  // 从前端内存虚拟树递归展开选中文件夹下的全部子文件（0 Class A 消耗）
+  if (state.allObjects) {
+    for (const selKey of selected) {
+      if (selKey.endsWith('/')) {
+        for (const obj of state.allObjects) {
+          if (obj.key.startsWith(selKey) && obj.key !== selKey) {
+            if (!expandedKeySet.has(obj.key)) {
+              subItemCount++;
+            }
+            expandedKeySet.add(obj.key);
+          }
+        }
+      }
+    }
+  }
+
+  const confirmMsg = subItemCount > 0
+    ? `确定要删除已选中的 ${count} 个项目吗？（其中包含文件夹内的 ${subItemCount} 个子文件/对象，将一并彻底删除，此操作不可撤销）`
+    : `确定要删除已选中的 ${count} 个项目吗？此操作无法撤销。`;
+
+  const confirmed = await showConfirm('确认删除', confirmMsg);
   if (!confirmed) return;
 
-  const keysToDelete = Array.from(state.selectedKeys);
-  showToast(`正在批量删除 ${keysToDelete.length} 个项目...`, 'info');
+  const allKeysToDelete = Array.from(expandedKeySet);
+  showToast(`正在删除 ${allKeysToDelete.length} 个对象...`, 'info');
 
   try {
-    // 单次原子批量请求，彻底替代原先多次循环请求
-    const res = await apiFetch(`${API.file}?action=batchDelete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keys: keysToDelete }),
-    });
+    // 按 R2 原生单批上限（1000 个）分批提交原子删除
+    const BATCH_LIMIT = 1000;
+    let totalDeleted = 0;
 
-    if (res.ok) {
+    for (let i = 0; i < allKeysToDelete.length; i += BATCH_LIMIT) {
+      const chunk = allKeysToDelete.slice(i, i + BATCH_LIMIT);
+      const res = await apiFetch(`${API.file}?action=batchDelete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keys: chunk,
+          expandFolders: !state.allObjects,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || '批量删除失败');
+      }
       const data = await res.json().catch(() => ({}));
-      showToast(`成功批量删除 ${data.deletedCount || keysToDelete.length} 个项目`, 'success');
-      // 乐观更新：从本地与缓存剔除被删项目，无需发起额外的 /api/files 请求！
-      optimisticRemoveItems(keysToDelete);
-    } else {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || '批量删除失败', 'error');
+      totalDeleted += (data.deletedCount || chunk.length);
     }
+
+    showToast(`成功删除 ${totalDeleted} 个对象`, 'success');
+    // 乐观更新：从本地虚拟树与缓存剔除被删项目，无需发起额外的 /api/files 请求！
+    optimisticRemoveItems(allKeysToDelete);
   } catch (err) {
     showToast('批量删除异常：' + err.message, 'error');
   }
@@ -1346,10 +1471,16 @@ function downloadFile(key) {
   document.body.removeChild(a);
 }
 
-// ─── 多格式全端高清预览引擎 ──────────────────────────────────────────────────
+// ─── 多格式全端高清预览引擎 (带会话令牌与 AbortController 竞态防护) ─────────────
 let currentPdfCleanup = null;
+let previewSessionId = 0;
+let currentPreviewAbort = null;
 
-async function renderPdfPreview(file, mediaUrl) {
+function isPreviewSessionActive(sessionId) {
+  return sessionId === previewSessionId && !dom.previewModal.hidden;
+}
+
+async function renderPdfPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
@@ -1358,16 +1489,23 @@ async function renderPdfPreview(file, mediaUrl) {
 
   try {
     await loadScript('/vendor/pdfjs/pdf.min.js');
+    if (!isPreviewSessionActive(sessionId)) return;
+
     if (window.pdfjsLib) {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
     }
 
-    const res = await apiFetch(mediaUrl);
+    const res = await apiFetch(mediaUrl, { signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.arrayBuffer();
+    if (!isPreviewSessionActive(sessionId)) return;
 
     const loadingTask = window.pdfjsLib.getDocument({ data });
     const pdfDoc = await loadingTask.promise;
+    if (!isPreviewSessionActive(sessionId)) {
+      pdfDoc.destroy?.();
+      return;
+    }
 
     let currentPageNum = 1;
     const totalPages = pdfDoc.numPages;
@@ -1402,8 +1540,11 @@ async function renderPdfPreview(file, mediaUrl) {
     const btnFit = dom.previewBody.querySelector('#btn-pdf-fit');
 
     async function renderPage(num) {
+      if (!isPreviewSessionActive(sessionId)) return;
       isRendering = true;
       const page = await pdfDoc.getPage(num);
+      if (!isPreviewSessionActive(sessionId)) return;
+
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({ scale: currentScale });
 
@@ -1420,6 +1561,8 @@ async function renderPdfPreview(file, mediaUrl) {
 
       await page.render(renderContext).promise;
       isRendering = false;
+
+      if (!isPreviewSessionActive(sessionId)) return;
 
       if (pendingPageNum !== null) {
         const next = pendingPageNum;
@@ -1475,7 +1618,7 @@ async function renderPdfPreview(file, mediaUrl) {
     });
 
     const onKeydown = e => {
-      if (dom.previewModal.hidden) return;
+      if (!isPreviewSessionActive(sessionId)) return;
       if (e.key === 'ArrowLeft') {
         if (currentPageNum > 1) { currentPageNum--; queueRenderPage(currentPageNum); }
       } else if (e.key === 'ArrowRight') {
@@ -1486,11 +1629,13 @@ async function renderPdfPreview(file, mediaUrl) {
 
     currentPdfCleanup = () => {
       window.removeEventListener('keydown', onKeydown);
+      pdfDoc.destroy?.();
     };
 
     renderPage(currentPageNum);
 
   } catch (err) {
+    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
     console.error('PDF.js render error:', err);
     dom.previewBody.innerHTML = '';
     const iframe = document.createElement('iframe');
@@ -1501,7 +1646,7 @@ async function renderPdfPreview(file, mediaUrl) {
   }
 }
 
-async function renderDocxPreview(file, mediaUrl) {
+async function renderDocxPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
@@ -1511,10 +1656,12 @@ async function renderDocxPreview(file, mediaUrl) {
   try {
     await loadScript('/vendor/jszip.min.js');
     await loadScript('/vendor/docx-preview.min.js');
+    if (!isPreviewSessionActive(sessionId)) return;
 
-    const res = await apiFetch(mediaUrl);
+    const res = await apiFetch(mediaUrl, { signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
+    if (!isPreviewSessionActive(sessionId)) return;
 
     const wrap = document.createElement('div');
     wrap.className = 'preview-docx-wrap';
@@ -1529,6 +1676,7 @@ async function renderDocxPreview(file, mediaUrl) {
       breakPages: true,
     });
   } catch (err) {
+    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
     dom.previewBody.innerHTML = `
       <div style="text-align:center;padding:48px 20px;color:#86868b">
         <div style="margin-bottom:16px">${renderSvgIcon('word', 56)}</div>
@@ -1540,7 +1688,7 @@ async function renderDocxPreview(file, mediaUrl) {
   }
 }
 
-async function renderHeicPreview(file, mediaUrl) {
+async function renderHeicPreview(file, mediaUrl, sessionId, signal) {
   if (heicPreviewCache.has(file.key)) {
     const img = document.createElement('img');
     img.alt = getFileName(file.key);
@@ -1571,9 +1719,12 @@ async function renderHeicPreview(file, mediaUrl) {
 
   try {
     await loadScript('/vendor/heic2any.min.js');
-    const res = await apiFetch(mediaUrl);
+    if (!isPreviewSessionActive(sessionId)) return;
+
+    const res = await apiFetch(mediaUrl, { signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
+    if (!isPreviewSessionActive(sessionId)) return;
 
     const conversionResult = await window.heic2any({
       blob,
@@ -1583,6 +1734,8 @@ async function renderHeicPreview(file, mediaUrl) {
     const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
     const objectUrl = URL.createObjectURL(resultBlob);
     heicPreviewCache.set(file.key, objectUrl);
+
+    if (!isPreviewSessionActive(sessionId)) return;
 
     const img = document.createElement('img');
     img.alt = getFileName(file.key);
@@ -1594,6 +1747,7 @@ async function renderHeicPreview(file, mediaUrl) {
     dom.previewBody.innerHTML = '';
     dom.previewBody.appendChild(img);
   } catch (err) {
+    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
     dom.previewBody.innerHTML = `
       <div style="text-align:center;padding:48px 20px;color:#86868b">
         <div style="margin-bottom:16px">${renderSvgIcon('image', 56)}</div>
@@ -1605,7 +1759,7 @@ async function renderHeicPreview(file, mediaUrl) {
   }
 }
 
-async function renderExcelPreview(file, mediaUrl) {
+async function renderExcelPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
@@ -1614,14 +1768,16 @@ async function renderExcelPreview(file, mediaUrl) {
 
   try {
     await loadScript('/vendor/xlsx.full.min.js');
+    if (!isPreviewSessionActive(sessionId)) return;
 
     let buffer = xlsxPreviewCache.get(file.key);
     if (!buffer) {
-      const res = await apiFetch(mediaUrl);
+      const res = await apiFetch(mediaUrl, { signal });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       buffer = await res.arrayBuffer();
       xlsxPreviewCache.set(file.key, buffer);
     }
+    if (!isPreviewSessionActive(sessionId)) return;
 
     const workbook = window.XLSX.read(buffer, { type: 'array' });
     const sheetNames = workbook.SheetNames || [];
@@ -1684,6 +1840,7 @@ async function renderExcelPreview(file, mediaUrl) {
     showSheet(sheetNames[0]);
 
   } catch (err) {
+    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
     dom.previewBody.innerHTML = `
       <div style="text-align:center;padding:48px 20px;color:#86868b">
         <div style="margin-bottom:16px">${renderSvgIcon('excel', 56)}</div>
@@ -1695,7 +1852,7 @@ async function renderExcelPreview(file, mediaUrl) {
   }
 }
 
-async function renderZipPreview(file, mediaUrl) {
+async function renderZipPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
@@ -1704,11 +1861,16 @@ async function renderZipPreview(file, mediaUrl) {
 
   try {
     await loadScript('/vendor/jszip.min.js');
-    const res = await apiFetch(mediaUrl);
+    if (!isPreviewSessionActive(sessionId)) return;
+
+    const res = await apiFetch(mediaUrl, { signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
+    if (!isPreviewSessionActive(sessionId)) return;
 
     const zip = await window.JSZip.loadAsync(blob);
+    if (!isPreviewSessionActive(sessionId)) return;
+
     const entries = [];
     let totalUncompressed = 0;
     let fileCount = 0;
@@ -1775,6 +1937,7 @@ async function renderZipPreview(file, mediaUrl) {
     listWrap.innerHTML = listHtml;
 
   } catch (err) {
+    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
     dom.previewBody.innerHTML = `
       <div style="text-align:center;padding:48px 20px;color:#86868b">
         <div style="margin-bottom:16px">${renderSvgIcon('zip', 56)}</div>
@@ -1786,8 +1949,20 @@ async function renderZipPreview(file, mediaUrl) {
   }
 }
 
-// ─── 文件在线预览 Modal (支持全端多格式解析) ──────────────────────────────────
+// ─── 文件在线预览 Modal (支持全端多格式解析与并发取消) ─────────────────────────
 async function openPreview(file) {
+  if (currentPreviewAbort) {
+    try { currentPreviewAbort.abort(); } catch (_) {}
+  }
+  if (currentPdfCleanup) {
+    try { currentPdfCleanup(); } catch (_) {}
+    currentPdfCleanup = null;
+  }
+
+  const sessionId = ++previewSessionId;
+  const abortController = new AbortController();
+  currentPreviewAbort = abortController;
+
   state.previewItem = file;
   const name = getFileName(file.key);
   const type = getFileType(file.key);
@@ -1804,7 +1979,7 @@ async function openPreview(file) {
   const mediaUrl = buildMediaUrl(file.key);
 
   if (ext === 'heic' || ext === 'heif') {
-    await renderHeicPreview(file, mediaUrl);
+    await renderHeicPreview(file, mediaUrl, sessionId, abortController.signal);
 
   } else if (type === 'image') {
     const img = document.createElement('img');
@@ -1836,7 +2011,16 @@ async function openPreview(file) {
     dom.previewBody.appendChild(wrap);
 
   } else if (type === 'text' || type === 'code') {
-    if (textPreviewCache.has(file.key)) {
+    if (file.size > MAX_TEXT_PREVIEW_BYTES) {
+      dom.previewBody.innerHTML = `
+        <div style="text-align:center;padding:48px 20px;color:#86868b">
+          <div style="margin-bottom:16px">${renderSvgIcon(type, 56)}</div>
+          <p style="font-size:16px;color:#e5e5ea;font-weight:600;margin-bottom:8px">文本文件较大 (${formatSize(file.size)})</p>
+          <p style="font-size:13px;color:#86868b;margin-bottom:24px">为保障浏览器响应流畅度，超过 2 MB 的大文本暂不直接渲染全文，请下载后在本地查看。</p>
+          <button class="btn btn-primary" id="btn-modal-dl">⬇️ 立即下载该文件</button>
+        </div>`;
+      dom.previewBody.querySelector('#btn-modal-dl')?.addEventListener('click', () => downloadFile(file.key));
+    } else if (textPreviewCache.has(file.key)) {
       const wrap = document.createElement('div');
       wrap.className = 'preview-text-wrap';
       const pre = document.createElement('pre');
@@ -1849,10 +2033,11 @@ async function openPreview(file) {
     } else {
       dom.previewBody.innerHTML = '<div style="color:#86868b;padding:24px">正在加载文本内容...</div>';
       try {
-        const res = await apiFetch(mediaUrl);
+        const res = await apiFetch(mediaUrl, { signal: abortController.signal });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const text = await res.text();
         textPreviewCache.set(file.key, text);
+        if (!isPreviewSessionActive(sessionId)) return;
         const wrap = document.createElement('div');
         wrap.className = 'preview-text-wrap';
         const pre = document.createElement('pre');
@@ -1863,16 +2048,17 @@ async function openPreview(file) {
         dom.previewBody.innerHTML = '';
         dom.previewBody.appendChild(wrap);
       } catch (err) {
+        if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
         dom.previewBody.innerHTML = `<div style="color:#ff3b30;padding:24px">加载失败：${escapeHtml(err.message)}</div>`;
       }
     }
 
   } else if (type === 'pdf') {
-    await renderPdfPreview(file, mediaUrl);
+    await renderPdfPreview(file, mediaUrl, sessionId, abortController.signal);
 
   } else if (type === 'word') {
     if (ext === 'docx') {
-      await renderDocxPreview(file, mediaUrl);
+      await renderDocxPreview(file, mediaUrl, sessionId, abortController.signal);
     } else {
       dom.previewBody.innerHTML = `
         <div style="text-align:center;padding:48px 20px;color:#86868b">
@@ -1885,10 +2071,10 @@ async function openPreview(file) {
     }
 
   } else if (type === 'excel') {
-    await renderExcelPreview(file, mediaUrl);
+    await renderExcelPreview(file, mediaUrl, sessionId, abortController.signal);
 
   } else if (type === 'zip') {
-    await renderZipPreview(file, mediaUrl);
+    await renderZipPreview(file, mediaUrl, sessionId, abortController.signal);
 
   } else {
     dom.previewBody.innerHTML = `
@@ -1903,8 +2089,13 @@ async function openPreview(file) {
 }
 
 function closePreview() {
+  previewSessionId++;
+  if (currentPreviewAbort) {
+    try { currentPreviewAbort.abort(); } catch (_) {}
+    currentPreviewAbort = null;
+  }
   if (currentPdfCleanup) {
-    currentPdfCleanup();
+    try { currentPdfCleanup(); } catch (_) {}
     currentPdfCleanup = null;
   }
   dom.previewModal.hidden = true;
@@ -2025,7 +2216,7 @@ async function submitRename(e) {
         .map(o => ({ from: o.key, to: toKey + o.key.slice(key.length) }));
     }
     if (items.length === 0) {
-      items = [{ from: key, to: toKey }];
+      items = [{ from: key, to: toKey, expandFolder: !state.allObjects }];
     }
   } else {
     const parentPrefix = key.includes('/') ? key.slice(0, key.lastIndexOf('/') + 1) : '';
@@ -2050,8 +2241,8 @@ async function submitRename(e) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
       throw new Error(data.error || '重命名失败');
     }
 
@@ -2074,7 +2265,7 @@ dom.renameModal?.addEventListener('click', e => {
   if (e.target === dom.renameModal) closeRenameModal();
 });
 
-// ─── 文件与文件夹移动系统 ──────────────────────────────────────────────────
+// ─── 文件与文件夹移动系统 (含同名冲突零成本拦截) ─────────────────────────────
 let selectedMoveDest = null;
 
 function getAllFolderPaths() {
@@ -2084,17 +2275,38 @@ function getAllFolderPaths() {
     for (const obj of state.allObjects) {
       const parts = obj.key.split('/');
       let cur = '';
-      const limit = obj.key.endsWith('/') ? parts.length - 1 : parts.length - 1;
+      const limit = parts.length - 1;
       for (let i = 0; i < limit; i++) {
         cur += parts[i] + '/';
         folders.add(cur);
       }
     }
   }
+  for (const [pfx, cached] of dirCache.entries()) {
+    if (pfx) folders.add(pfx);
+    (cached.folders || []).forEach(f => folders.add(f.endsWith('/') ? f : f + '/'));
+  }
   state.folders.forEach(f => {
     folders.add(f.endsWith('/') ? f : f + '/');
   });
   return Array.from(folders).sort();
+}
+
+function checkTargetExists(toKey, isFolder, destPrefix) {
+  if (state.allObjects) {
+    if (isFolder) {
+      return state.allObjects.some(o => o.key === toKey || o.key.startsWith(toKey));
+    }
+    return state.allObjects.some(o => o.key === toKey);
+  }
+  const cached = dirCache.get(destPrefix);
+  if (cached) {
+    if (isFolder) {
+      return (cached.folders || []).includes(toKey);
+    }
+    return (cached.files || []).some(f => f.key === toKey);
+  }
+  return false;
 }
 
 function openMoveModal() {
@@ -2108,7 +2320,8 @@ function openMoveModal() {
   selected.forEach(k => {
     if (k.endsWith('/')) {
       if (state.allObjects) {
-        totalFiles += state.allObjects.filter(o => o.key.startsWith(k)).length;
+        const countInFolder = state.allObjects.filter(o => o.key.startsWith(k)).length;
+        totalFiles += Math.max(1, countInFolder);
       } else {
         totalFiles += 1;
       }
@@ -2144,7 +2357,7 @@ function openMoveModal() {
       <div class="move-tree-item ${disabled ? 'disabled' : ''}" data-path="${escapeHtml(f)}" style="padding-left:${padLeft}px">
         ${renderSvgIcon('folder', 16)}
         <span>${escapeHtml(displayName)}</span>
-        <span style="font-size:12px;color:#86868b;margin-left:4px">${badge}</span>
+        <span class="move-tree-badge">${badge}</span>
       </div>`;
   });
 
@@ -2180,23 +2393,37 @@ async function submitMove() {
   for (const k of selected) {
     const isFolder = k.endsWith('/');
     if (isFolder) {
-      const folderName = getFileName(k.slice(0, -1)) + '/';
+      const folderDisplay = getFileName(k.slice(0, -1));
+      const folderName = folderDisplay + '/';
       const toKey = destPrefix + folderName;
+
+      // 同名冲突零成本拦截
+      if (checkTargetExists(toKey, true, destPrefix)) {
+        showToast(`目标目录已存在同名文件夹 "${folderDisplay}"，已取消移动以避免覆盖`, 'error');
+        return;
+      }
+
       mappings.push({ from: k, to: toKey, isFolder: true });
 
       if (state.allObjects) {
-        state.allObjects
-          .filter(o => o.key.startsWith(k))
-          .forEach(o => {
-            items.push({ from: o.key, to: toKey + o.key.slice(k.length) });
-          });
+        const subObjs = state.allObjects.filter(o => o.key.startsWith(k));
+        subObjs.forEach(o => {
+          items.push({ from: o.key, to: toKey + o.key.slice(k.length) });
+        });
       }
-      if (!items.some(i => i.from === k)) {
-        items.push({ from: k, to: toKey });
+      if (!items.some(i => i.from.startsWith(k))) {
+        items.push({ from: k, to: toKey, expandFolder: !state.allObjects });
       }
     } else {
       const fileName = getFileName(k);
       const toKey = destPrefix + fileName;
+
+      // 同名冲突零成本拦截
+      if (checkTargetExists(toKey, false, destPrefix)) {
+        showToast(`目标目录已存在同名文件 "${fileName}"，已取消移动以避免覆盖`, 'error');
+        return;
+      }
+
       mappings.push({ from: k, to: toKey, isFolder: false });
       items.push({ from: k, to: toKey });
     }
@@ -2211,13 +2438,25 @@ async function submitMove() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
       throw new Error(data.error || '移动失败');
     }
 
-    optimisticMoveItems(mappings);
-    showToast(`成功移动 ${selected.length} 个项目`, 'success');
+    // 校验返回明细，仅对后端确认成功的项目执行本地虚拟树乐观迁移
+    const results = data.results || [];
+    const failedSet = new Set(results.filter(r => !r.success).map(r => r.from));
+    const succeededMappings = mappings.filter(m => !failedSet.has(m.from));
+
+    if (succeededMappings.length > 0) {
+      optimisticMoveItems(succeededMappings);
+    }
+
+    if (failedSet.size > 0) {
+      showToast(`部分项目移动失败（成功 ${succeededMappings.length} 项，失败 ${failedSet.size} 项）`, 'warning');
+    } else {
+      showToast(`成功移动 ${succeededMappings.length} 个项目`, 'success');
+    }
     closeMoveModal();
   } catch (err) {
     showToast(err.message, 'error');

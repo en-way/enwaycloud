@@ -1387,7 +1387,7 @@ input::-webkit-caps-lock-indicator {
   }
 }
 
-/* ─── 15. 移动与重命名 Modal ─────────────────────────────────────────────── */
+/* ─── 15. 移动与重命名 Modal (Apple 浅色微质感统一主题) ───────────────────── */
 .modal-box-move {
   max-width: 520px;
   width: 90vw;
@@ -1398,19 +1398,18 @@ input::-webkit-caps-lock-indicator {
 
 .move-subtitle {
   font-size: 13px;
-  color: #86868b;
-  margin-top: 4px;
-  margin-bottom: 12px;
-  text-align: center;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+  margin-bottom: 14px;
 }
 
 .move-tree-container {
   flex: 1;
   max-height: 280px;
   overflow-y: auto;
-  background: #18181a;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--color-bg-base);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
   padding: 8px;
   margin-bottom: 14px;
 }
@@ -1425,40 +1424,48 @@ input::-webkit-caps-lock-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-radius: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   user-select: none;
   font-size: 13.5px;
-  color: #e5e5ea;
+  color: var(--color-text-primary);
+  border: 1px solid transparent;
   transition: all 0.15s ease;
 }
 
 .move-tree-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .move-tree-item.selected {
-  background: rgba(0, 113, 227, 0.2);
-  color: #2997ff;
-  font-weight: 500;
-  border: 1px solid rgba(0, 113, 227, 0.35);
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--color-primary);
+  font-weight: 600;
+  border-color: rgba(0, 113, 227, 0.28);
 }
 
 .move-tree-item.disabled {
-  opacity: 0.35;
+  opacity: 0.42;
   cursor: not-allowed;
   pointer-events: none;
 }
 
+.move-tree-badge {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-weight: 400;
+  margin-left: 4px;
+}
+
 .move-quota-tip {
   font-size: 12px;
-  color: #86868b;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 8px;
-  padding: 8px 12px;
-  margin-bottom: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--color-text-secondary);
+  background: rgba(0, 113, 227, 0.05);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(0, 113, 227, 0.12);
   line-height: 1.5;
 }
 
