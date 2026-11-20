@@ -7,6 +7,8 @@
  * GET /api/files?refresh=1          // 强制穿透 Edge 缓存并刷新
  */
 
+import { sanitizeKey, jsonResponse, withHeaders } from './_utils.js';
+
 export async function onRequestGet(context) {
   const { request, env } = context;
 
@@ -19,14 +21,14 @@ export async function onRequestGet(context) {
     const url = new URL(request.url);
     const isAll = url.searchParams.get('all') === '1';
     const isRefresh = url.searchParams.get('refresh') === '1';
-    let prefix = (url.searchParams.get('prefix') || '').trim();
+    let prefix = sanitizeKey(url.searchParams.get('prefix') || '');
     if (prefix && !prefix.endsWith('/')) {
       prefix = prefix + '/';
     }
     const cursor = url.searchParams.get('cursor') || undefined;
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '1000', 10), 1000);
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '1000', 10) || 1000, 1), 1000);
 
-    // 1. Cloudflare Edge CDN 目录缓存检查 (剥离 auth 与 refresh，共享 CDN 缓存)
+    // 1. Cloudflare Edge CDN 目录缓存检查（内部缓存与客户端私密响应头分离）
     const cache = typeof caches !== 'undefined' ? caches.default : null;
     const cacheUrl = new URL(request.url);
     cacheUrl.searchParams.delete('auth');
@@ -39,16 +41,15 @@ export async function onRequestGet(context) {
       try {
         const cachedResponse = await cache.match(cacheKey);
         if (cachedResponse) {
-          return cachedResponse;
+          return withHeaders(cachedResponse, { 'Cache-Control': 'private, no-cache' });
         }
       } catch (_) {}
     }
 
     // 2. 策略一：全盘虚拟树扫描模式 (?all=1)
     if (isAll) {
-      // 不传 delimiter，单次拉取整盘前 1000 个对象
       const listed = await env.R2_BUCKET.list({
-        cursor: cursor,
+        cursor,
         limit: 1000,
       });
 
@@ -70,27 +71,26 @@ export async function onRequestGet(context) {
         cursor: listed.truncated ? (listed.cursor || null) : null,
       };
 
-      const response = jsonResponse(resData, 200, true);
+      const edgeResponse = jsonResponse(resData, 200, {
+        'Cache-Control': 'public, max-age=300',
+      });
       if (cache && context && typeof context.waitUntil === 'function') {
         try {
-          context.waitUntil(cache.put(cacheKey, response.clone()));
+          context.waitUntil(cache.put(cacheKey, edgeResponse.clone()));
         } catch (_) {}
       }
-      return response;
+      return withHeaders(edgeResponse, { 'Cache-Control': 'private, no-cache' });
     }
 
     // 3. 策略二：按需单目录查询模式 (带 delimiter)
     const listed = await env.R2_BUCKET.list({
-      prefix: prefix,
+      prefix,
       delimiter: '/',
-      cursor: cursor,
-      limit: limit,
+      cursor,
+      limit,
     });
 
-    // 提取子文件夹（delimitedPrefixes）
-    const folders = (listed.delimitedPrefixes || []);
-
-    // 提取文件列表，过滤掉 0 字节目录占位符
+    const folders = listed.delimitedPrefixes || [];
     const files = (listed.objects || [])
       .filter(obj => {
         if (obj.key === prefix) return false;
@@ -113,36 +113,17 @@ export async function onRequestGet(context) {
       prefix,
     };
 
-    const response = jsonResponse(resData, 200, true);
+    const edgeResponse = jsonResponse(resData, 200, {
+      'Cache-Control': 'public, max-age=300',
+    });
     if (cache && context && typeof context.waitUntil === 'function') {
       try {
-        context.waitUntil(cache.put(cacheKey, response.clone()));
+        context.waitUntil(cache.put(cacheKey, edgeResponse.clone()));
       } catch (_) {}
     }
-    return response;
+    return withHeaders(edgeResponse, { 'Cache-Control': 'private, no-cache' });
   } catch (err) {
     console.error('[files.js] Error:', err);
-    return jsonResponse(
-      { error: '获取文件列表失败', message: err.message },
-      500
-    );
+    return jsonResponse({ error: '获取文件列表失败，请稍后重试' }, 500);
   }
-}
-
-/**
- * 构造 JSON 响应 (支持 Edge 缓存头与浏览器不缓存)
- * @param {object} data
- * @param {number} status
- * @param {boolean} cacheable
- * @returns {Response}
- */
-function jsonResponse(data, status = 200, cacheable = false) {
-  const headers = {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': cacheable ? 'private, no-cache, s-maxage=300' : 'no-store',
-  };
-  return new Response(JSON.stringify(data), {
-    status,
-    headers,
-  });
 }

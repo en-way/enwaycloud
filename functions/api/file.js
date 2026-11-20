@@ -1,19 +1,34 @@
 /**
  * functions/api/file.js
- * 处理单文件操作：获取/预览/下载、上传（普通 + 分块）、删除、新建文件夹
+ * 处理单文件操作：获取/预览/下载、上传（普通 + 分块）、删除、批量删除、移动/重命名、新建文件夹
  *
  * 路由分发（通过 ?action= 参数区分）：
  *
- * GET    /api/file?key=xxx                              → 预览/下载文件
+ * GET    /api/file?key=xxx                              → 预览/下载文件（含 XSS 沙箱与 Edge Cache）
  * GET    /api/file?key=xxx&download=1                   → 强制下载
- * PUT    /api/file?key=xxx                              → 普通上传（< 5MB 小文件）
+ * PUT    /api/file?key=xxx                              → 普通上传（<= 50MB 小文件）
  * PUT    /api/file?key=xxx&action=mkdir                 → 新建文件夹（上传 0 字节占位符）
  * POST   /api/file?key=xxx&action=createMultipart       → 创建 Multipart Upload，返回 uploadId
  * PUT    /api/file?key=xxx&action=uploadPart&uploadId=xxx&partNumber=N → 上传单个分块
  * POST   /api/file?key=xxx&action=completeMultipart     → 完成分块上传（body: {uploadId, parts:[{partNumber, etag}]}）
  * DELETE /api/file?key=xxx&action=abortMultipart&uploadId=xxx → 中止分块上传
  * DELETE /api/file?key=xxx                              → 删除文件或空文件夹
+ * POST   /api/file?action=batchDelete                   → 批量原子删除
+ * POST   /api/file?action=move                          → 移动/重命名
  */
+
+import { sanitizeKey, jsonResponse, withHeaders } from './_utils.js';
+
+// 高危可执行 MIME 类型（强制 attachment + 沙箱 CSP，杜绝同源存储型 XSS）
+const DANGEROUS_MIME_TYPES = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'image/svg+xml',
+  'application/xml',
+  'text/xml',
+  'text/javascript',
+  'application/javascript',
+]);
 
 // MIME 类型映射表（根据文件扩展名推断）
 const MIME_MAP = {
@@ -63,7 +78,7 @@ const MIME_MAP = {
 };
 
 /**
- * 根据文件 key 推断 Content-Type
+ * 根据文件 key 推断安全的 Content-Type（上传时不信任客户端声明）
  * @param {string} key
  * @param {object} httpMetadata
  * @returns {string}
@@ -75,30 +90,6 @@ function inferContentType(key, httpMetadata = {}) {
   if (dotIdx <= 0) return 'application/octet-stream';
   const ext = fileName.slice(dotIdx + 1).toLowerCase();
   return MIME_MAP[ext] || 'application/octet-stream';
-}
-
-/**
- * 规范化并清洗文件 Key (防止目录穿越与多重斜杠)
- * @param {string} key
- * @returns {string}
- */
-function sanitizeKey(key) {
-  if (!key || typeof key !== 'string') return '';
-  let cleaned = key.trim().replace(/^\/+/, '').replace(/\/+/g, '/');
-  if (cleaned.includes('..')) {
-    cleaned = cleaned.split('/').filter(p => p !== '..' && p !== '.').join('/');
-  }
-  return cleaned;
-}
-
-/**
- * 构造 JSON 响应
- */
-function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
-  });
 }
 
 /**
@@ -152,8 +143,8 @@ function purgeEdgeCache(context, requestUrl, keysOrKey) {
 }
 
 /**
- * GET /api/file?key=xxx[&download=1][&auth=xxx]
- * 获取/预览/下载文件 (集成 Range 单次精确读取、ETag 304 协商缓存、Cloudflare Edge 边缘缓存)
+ * GET /api/file?key=xxx[&download=1]
+ * 获取/预览/下载文件 (集成 Range 单次精确读取、ETag 304 协商缓存、XSS 沙箱头与 Cloudflare Edge 缓存)
  */
 async function handleGet(request, env, context) {
   const url = new URL(request.url);
@@ -164,7 +155,7 @@ async function handleGet(request, env, context) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
   }
 
-  // 1. 规范化边缘缓存检查：剥离 ?auth=，让所有已鉴权请求共享同一 Cache Key
+  // 1. 规范化边缘缓存检查：内部 Edge Cache 与客户端私密响应头分离
   const rangeHeader = request.headers.get('Range');
   const cache = typeof caches !== 'undefined' ? caches.default : null;
   const cacheUrl = new URL(request.url);
@@ -177,7 +168,7 @@ async function handleGet(request, env, context) {
     try {
       const cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) {
-        return cachedResponse;
+        return withHeaders(cachedResponse, { 'Cache-Control': 'private, max-age=300' });
       }
     } catch (_) {}
   }
@@ -194,6 +185,8 @@ async function handleGet(request, env, context) {
     }
 
     const contentType = inferContentType(key, object.httpMetadata || {});
+    const baseMime = contentType.split(';')[0].trim().toLowerCase();
+    const isDangerousMime = DANGEROUS_MIME_TYPES.has(baseMime);
     const fileName = key.split('/').pop();
     const etag = object.httpEtag || object.etag || '';
 
@@ -203,24 +196,27 @@ async function handleGet(request, env, context) {
         status: 304,
         headers: {
           'ETag': etag,
-          'Cache-Control': 'public, max-age=604800, immutable',
+          'Cache-Control': 'private, max-age=300',
           'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
           'Accept-Ranges': 'bytes',
+          'X-Content-Type-Options': 'nosniff',
         },
       });
     }
 
     const headers = new Headers({
       'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=604800, immutable',
+      'Cache-Control': 'private, max-age=300',
       'ETag': etag,
       'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
       'Accept-Ranges': 'bytes',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
     });
 
     const safeAsciiName = fileName.replace(/["\r\n\\]/g, '_');
-    if (forceDownload) {
-      // 对文件名进行 RFC 5987 编码，支持中文等非 ASCII 字符
+    if (forceDownload || isDangerousMime) {
+      // 对下载或高危可执行文件（HTML/SVG/XML/JS）强制 attachment，杜绝同源 XSS
       const encodedFileName = encodeURIComponent(fileName).replace(/'/g, "%27");
       headers.set(
         'Content-Disposition',
@@ -243,16 +239,20 @@ async function handleGet(request, env, context) {
 
     // 5. 完整 200 响应
     headers.set('Content-Length', object.size.toString());
-    const response = new Response(object.body, { status: 200, headers });
 
     // 写入 Cloudflare 边缘缓存（仅针对状态码 200、非 Range、非下载且 < 50MB 的常规文件）
     if (cache && !rangeHeader && !forceDownload && object.size < 50 * 1024 * 1024 && context && typeof context.waitUntil === 'function') {
+      const [clientBody, cacheBody] = object.body.tee();
+      const cacheHeaders = new Headers(headers);
+      cacheHeaders.set('Cache-Control', 'public, max-age=300');
+      const cacheResponse = new Response(cacheBody, { status: 200, headers: cacheHeaders });
       try {
-        context.waitUntil(cache.put(cacheKey, response.clone()));
+        context.waitUntil(cache.put(cacheKey, cacheResponse));
       } catch (_) {}
+      return new Response(clientBody, { status: 200, headers });
     }
 
-    return response;
+    return new Response(object.body, { status: 200, headers });
   } catch (err) {
     if (err && err.message && (err.message.includes('Range') || err.message.includes('range'))) {
       return new Response('Range Not Satisfiable', {
@@ -261,13 +261,13 @@ async function handleGet(request, env, context) {
       });
     }
     console.error('[file.js] GET error:', err);
-    return jsonResponse({ error: '获取文件失败', message: err.message }, 500);
+    return jsonResponse({ error: '获取文件失败，请稍后重试' }, 500);
   }
 }
 
 /**
  * PUT /api/file?key=xxx
- * 普通上传（适合 < 5MB 的小文件，直接流式写入 R2）
+ * 普通上传（<= 50MB 小文件，服务端基于扩展名白名单安全推断 Content-Type）
  */
 async function handlePut(request, env, context) {
   const url = new URL(request.url);
@@ -278,7 +278,7 @@ async function handlePut(request, env, context) {
   }
 
   try {
-    const contentType = request.headers.get('Content-Type') || 'application/octet-stream';
+    const contentType = inferContentType(key);
     await env.R2_BUCKET.put(key, request.body, {
       httpMetadata: { contentType },
     });
@@ -286,7 +286,7 @@ async function handlePut(request, env, context) {
     return jsonResponse({ success: true, key, message: '上传成功' });
   } catch (err) {
     console.error('[file.js] PUT error:', err);
-    return jsonResponse({ error: '上传失败', message: err.message }, 500);
+    return jsonResponse({ error: '上传失败，请稍后重试' }, 500);
   }
 }
 
@@ -315,13 +315,13 @@ async function handleMkdir(request, env, context) {
     return jsonResponse({ success: true, key, message: '文件夹创建成功' });
   } catch (err) {
     console.error('[file.js] mkdir error:', err);
-    return jsonResponse({ error: '创建文件夹失败', message: err.message }, 500);
+    return jsonResponse({ error: '创建文件夹失败，请稍后重试' }, 500);
   }
 }
 
 /**
  * POST /api/file?key=xxx&action=createMultipart
- * 创建 Multipart Upload，返回 uploadId
+ * 创建 Multipart Upload，返回 uploadId（服务端基于扩展名白名单推断 Content-Type）
  */
 async function handleCreateMultipart(request, env) {
   const url = new URL(request.url);
@@ -332,9 +332,7 @@ async function handleCreateMultipart(request, env) {
   }
 
   try {
-    const contentType = request.headers.get('X-Content-Type') ||
-                        request.headers.get('Content-Type') ||
-                        'application/octet-stream';
+    const contentType = inferContentType(key);
 
     const multipartUpload = await env.R2_BUCKET.createMultipartUpload(key, {
       httpMetadata: { contentType },
@@ -347,7 +345,7 @@ async function handleCreateMultipart(request, env) {
     });
   } catch (err) {
     console.error('[file.js] createMultipart error:', err);
-    return jsonResponse({ error: '创建分块上传失败', message: err.message }, 500);
+    return jsonResponse({ error: '创建分块上传失败，请稍后重试' }, 500);
   }
 }
 
@@ -376,7 +374,7 @@ async function handleUploadPart(request, env) {
     });
   } catch (err) {
     console.error('[file.js] uploadPart error:', err);
-    return jsonResponse({ error: `上传第 ${partNumber} 块失败`, message: err.message }, 500);
+    return jsonResponse({ error: `上传第 ${partNumber} 块失败，请稍后重试` }, 500);
   }
 }
 
@@ -413,7 +411,7 @@ async function handleCompleteMultipart(request, env, context) {
     });
   } catch (err) {
     console.error('[file.js] completeMultipart error:', err);
-    return jsonResponse({ error: '完成分块上传失败', message: err.message }, 500);
+    return jsonResponse({ error: '完成分块上传失败，请稍后重试' }, 500);
   }
 }
 
@@ -436,7 +434,7 @@ async function handleAbortMultipart(request, env) {
     return jsonResponse({ success: true, message: '分块上传已中止' });
   } catch (err) {
     console.error('[file.js] abortMultipart error:', err);
-    return jsonResponse({ error: '中止分块上传失败', message: err.message }, 500);
+    return jsonResponse({ error: '中止分块上传失败，请稍后重试' }, 500);
   }
 }
 
@@ -467,7 +465,7 @@ async function handleDelete(request, env, context) {
     return jsonResponse({ success: true, key, message: '删除成功' });
   } catch (err) {
     console.error('[file.js] DELETE error:', err);
-    return jsonResponse({ error: '删除失败', message: err.message }, 500);
+    return jsonResponse({ error: '删除失败，请稍后重试' }, 500);
   }
 }
 
@@ -520,7 +518,7 @@ async function handleBatchDelete(request, env, context) {
     });
   } catch (err) {
     console.error('[file.js] batchDelete error:', err);
-    return jsonResponse({ error: '批量删除失败', message: err.message }, 500);
+    return jsonResponse({ error: '批量删除失败，请稍后重试' }, 500);
   }
 }
 
@@ -627,7 +625,7 @@ async function handleMove(request, env, context) {
     });
   } catch (err) {
     console.error('[file.js] move error:', err);
-    return jsonResponse({ error: '移动操作失败', message: err.message }, 500);
+    return jsonResponse({ error: '移动操作失败，请稍后重试' }, 500);
   }
 }
 
@@ -689,6 +687,6 @@ export async function onRequest(context) {
     return jsonResponse({ error: `不支持的请求方法: ${method}` }, 405);
   } catch (err) {
     console.error('[file.js] Unexpected error:', err);
-    return jsonResponse({ error: '服务器内部错误', message: err.message }, 500);
+    return jsonResponse({ error: '服务器内部错误，请稍后重试' }, 500);
   }
 }
