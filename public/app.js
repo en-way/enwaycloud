@@ -20,14 +20,34 @@ import {
   renderFileList,
   applyViewMode,
   registerUiItemHandlers,
+  openDrawer,
+  closeDrawer,
+  isDrawerOpen,
+  clearSelection,
 } from './js/ui.js';
 import { openPreview, closePreview } from './js/preview.js';
 import './js/upload.js';
-import { closeRenameModal, closeMoveModal } from './js/actions.js';
+import {
+  closeRenameModal,
+  closeMoveModal,
+  runSingleItemAction,
+  openRowSheet,
+  closeRowSheet,
+  isRowSheetOpen,
+  closeFabMenu,
+  isFabMenuOpen,
+  registerActionNavHandlers,
+} from './js/actions.js';
 
 // 注册无环 UI 回调
 registerCacheUiCallbacks({ renderFileList, updateSelectionUI });
 registerUiItemHandlers({
+  onOpenFolder: prefix => loadFiles(prefix),
+  onOpenPreview: file => openPreview(file),
+  onItemAction: (action, key, entry) => runSingleItemAction(action, key, entry),
+  onOpenRowSheet: entry => openRowSheet(entry),
+});
+registerActionNavHandlers({
   onOpenFolder: prefix => loadFiles(prefix),
   onOpenPreview: file => openPreview(file),
 });
@@ -121,7 +141,10 @@ dom.togglePassword.addEventListener('click', () => {
     : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>`;
 });
 
-dom.btnLogout.addEventListener('click', async () => {
+async function handleLogout() {
+  closeDrawer();
+  closeFabMenu();
+  closeRowSheet();
   try {
     await apiFetch(API.auth, { method: 'DELETE' });
   } catch (_) {}
@@ -130,13 +153,25 @@ dom.btnLogout.addEventListener('click', async () => {
   state.files = [];
   state.folders = [];
   state.selectedKeys.clear();
+  state.typeFilter = 'all';
   showLogin();
+}
+
+dom.btnLogout?.addEventListener('click', handleLogout);
+dom.btnLogoutDrawer?.addEventListener('click', handleLogout);
+
+dom.btnMenu?.addEventListener('click', () => {
+  if (isDrawerOpen()) closeDrawer();
+  else openDrawer();
 });
+dom.btnDrawerClose?.addEventListener('click', closeDrawer);
+dom.drawerBackdrop?.addEventListener('click', closeDrawer);
 
 // ─── 文件数据加载 (全盘轻量虚拟树 + localStorage 持久化 + 请求合并) ───────────────
 export async function loadFiles(prefix = '', forceRefresh = false) {
   state.loading = true;
   state.currentPrefix = prefix;
+  state.typeFilter = 'all';
   state.selectedKeys.clear();
   updateSelectionUI();
   renderBreadcrumb(prefix);
@@ -289,6 +324,10 @@ document.addEventListener('keydown', e => {
     if (!dom.moveModal.hidden)    { closeMoveModal(); return; }
     if (!dom.mkdirModal.hidden)   { dom.mkdirModal.hidden = true; return; }
     if (!dom.confirmModal.hidden) { dom.confirmModal.hidden = true; return; }
+    if (isRowSheetOpen())         { closeRowSheet(); return; }
+    if (isFabMenuOpen())          { closeFabMenu(); return; }
+    if (isDrawerOpen())           { closeDrawer(); return; }
+    if (state.selectedKeys.size > 0) { clearSelection(); return; }
   }
   if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r' && !e.shiftKey)) {
     if (!dom.app.hidden) {

@@ -54,6 +54,20 @@ document.addEventListener('drop', e => {
   if (files.length) enqueueFiles(files);
 });
 
+function syncUploadPanelSummary() {
+  const total = state.uploadQueue.length;
+  const active = state.uploadQueue.filter(i => i.status === 'pending' || i.status === 'uploading').length;
+  if (dom.uploadPanelBadge) {
+    dom.uploadPanelBadge.textContent = active > 0 ? `${active}/${total}` : `${total}`;
+  }
+  if (dom.uploadPanel) {
+    dom.uploadPanel.classList.toggle('is-collapsed', state.uploadPanelCollapsed);
+  }
+  if (dom.btnToggleUploadPanel) {
+    dom.btnToggleUploadPanel.setAttribute('aria-expanded', String(!state.uploadPanelCollapsed));
+  }
+}
+
 export function enqueueFiles(files) {
   const items = files.map(file => ({
     id:       uid(),
@@ -66,6 +80,7 @@ export function enqueueFiles(files) {
     abort:    null,
   }));
   state.uploadQueue.push(...items);
+  state.uploadPanelCollapsed = false;
   dom.uploadPanel.hidden = false;
   renderUploadPanel();
   processUploadQueue();
@@ -104,6 +119,7 @@ dom.uploadList.addEventListener('click', e => {
 
 function renderUploadPanel() {
   dom.uploadList.innerHTML = '';
+  syncUploadPanelSummary();
   state.uploadQueue.forEach(item => {
     const div = document.createElement('div');
     div.className = 'upload-item';
@@ -147,6 +163,7 @@ function renderUploadPanel() {
 }
 
 function updateUploadItemUI(item) {
+  syncUploadPanelSummary();
   const el = $(`upload-item-${item.id}`);
   if (!el) return;
 
@@ -358,16 +375,23 @@ async function uploadMultipart(item, key) {
   }
 }
 
-dom.btnClearDone.addEventListener('click', () => {
+dom.btnToggleUploadPanel?.addEventListener('click', () => {
+  state.uploadPanelCollapsed = !state.uploadPanelCollapsed;
+  syncUploadPanelSummary();
+});
+
+dom.btnClearDone?.addEventListener('click', () => {
   state.uploadQueue = state.uploadQueue.filter(i => i.status !== 'done' && i.status !== 'error' && i.status !== 'canceled');
   if (state.uploadQueue.length === 0) {
+    state.uploadPanelCollapsed = false;
     dom.uploadPanel.hidden = true;
+    syncUploadPanelSummary();
   } else {
     renderUploadPanel();
   }
 });
 
-dom.btnClosePanel.addEventListener('click', () => {
+dom.btnClosePanel?.addEventListener('click', () => {
   dom.uploadPanel.hidden = true;
 });
 

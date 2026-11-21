@@ -8,7 +8,7 @@
   <meta http-equiv="Expires" content="0" />
   <meta name="description" content="基于 Cloudflare R2 的轻量级个人网页云盘" />
   <title>R2 云盘</title>
-  <link rel="stylesheet" href="/style.css?v=20261121_01" />
+  <link rel="stylesheet" href="/style.css?v=20261121_03" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📁</text></svg>" />
 </head>
 <body>
@@ -69,123 +69,121 @@
   <!-- ═══════════════════════════════════════════════
        主应用界面（默认 hidden）
   ═══════════════════════════════════════════════ -->
-  <div id="app" hidden>
+  <div id="app" class="app-shell" hidden>
 
-    <!-- 顶部半透明毛玻璃导航栏 -->
-    <header class="header">
-      <div class="header-left">
-        <span class="header-title">R2 云盘</span>
-        <div class="storage-badge" id="storage-badge" title="R2 存储空间使用情况 (10 GB 免费额度)" hidden>
-          <div class="storage-bar">
-            <div class="storage-bar-fill" id="storage-bar-fill"></div>
-          </div>
-          <span id="storage-text" class="storage-text">0 B / 10 GB</span>
+    <!-- 左侧毛玻璃导航栏（桌面常驻 / 手机抽屉） -->
+    <aside id="sidebar" class="sidebar" aria-label="导航侧边栏">
+      <div class="sidebar-header">
+        <div class="sidebar-brand">
+          <span class="brand-badge" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+            </svg>
+          </span>
+          <span class="brand-name">R2 云盘</span>
+        </div>
+        <button id="btn-drawer-close" class="btn-icon sidebar-close-btn" type="button" aria-label="关闭侧边栏">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar-scroll">
+        <div class="sidebar-section">
+          <div class="sidebar-section-title">文件分类</div>
+          <nav id="type-nav" class="sidebar-nav" aria-label="文件分类">
+            <button type="button" class="sidebar-nav-item active" data-type="all">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+              </svg>
+              <span>全部文件</span>
+            </button>
+            <button type="button" class="sidebar-nav-item" data-type="image">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="3"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <path d="m21 15-3.5-3.5a2 2 0 0 0-2.828 0L6 21"/>
+              </svg>
+              <span>图片</span>
+            </button>
+            <button type="button" class="sidebar-nav-item" data-type="video">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="3"/>
+                <path d="m10 8.5 5.5 3.5-5.5 3.5v-7Z"/>
+              </svg>
+              <span>视频</span>
+            </button>
+            <button type="button" class="sidebar-nav-item" data-type="doc">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>
+                <path d="M14 2v4a2 2 0 0 0 2 2h4"/>
+                <line x1="8" x2="16" y1="13" y2="13"/>
+                <line x1="8" x2="13" y1="17" y2="17"/>
+              </svg>
+              <span>文档</span>
+            </button>
+            <button type="button" class="sidebar-nav-item" data-type="archive">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 8v13H3V8"/>
+                <path d="M1 3h22v5H1z"/>
+                <path d="M10 12h4"/>
+              </svg>
+              <span>压缩包</span>
+            </button>
+          </nav>
+          <p id="type-nav-hint" class="sidebar-hint" hidden>文件较多，请进入目录浏览</p>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-title">目录树</div>
+          <div id="sidebar-tree" class="sidebar-tree" role="tree" aria-label="目录树"></div>
         </div>
       </div>
-      <div class="header-right">
-        <!-- 视图切换胶囊 -->
-        <div class="view-switch-capsule">
-          <button id="btn-view-list" class="view-btn active" title="列表视图" aria-label="列表视图">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="8" x2="21" y1="6" y2="6"/>
-              <line x1="8" x2="21" y1="12" y2="12"/>
-              <line x1="8" x2="21" y1="18" y2="18"/>
-              <line x1="3" x2="3.01" y1="6" y2="6"/>
-              <line x1="3" x2="3.01" y1="12" y2="12"/>
-              <line x1="3" x2="3.01" y1="18" y2="18"/>
-            </svg>
-          </button>
-          <button id="btn-view-grid" class="view-btn" title="网格视图" aria-label="网格视图">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect width="7" height="7" x="3" y="3" rx="1"/>
-              <rect width="7" height="7" x="14" y="3" rx="1"/>
-              <rect width="7" height="7" x="14" y="14" rx="1"/>
-              <rect width="7" height="7" x="3" y="14" rx="1"/>
-            </svg>
-          </button>
+
+      <div class="sidebar-footer">
+        <div class="storage-card" id="storage-badge" title="R2 存储空间使用情况 (10 GB 免费额度)" hidden>
+          <div class="storage-card-header">
+            <span class="storage-card-label">存储空间</span>
+            <span id="storage-text" class="storage-text">0 B / 10 GB</span>
+          </div>
+          <div class="storage-bar">
+            <div class="storage-bar-segments" id="storage-bar-segments" hidden></div>
+            <div class="storage-bar-fill" id="storage-bar-fill"></div>
+          </div>
+          <div class="storage-legend" id="storage-legend"></div>
         </div>
-        <button id="btn-logout" class="btn btn-ghost btn-sm" title="锁定并退出">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px">
+
+        <button id="btn-logout-drawer" class="btn btn-ghost btn-block sidebar-logout-btn" type="button" title="锁定并退出">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
             <polyline points="16 17 21 12 16 7"/>
             <line x1="21" x2="9" y1="12" y2="12"/>
           </svg>
-          退出
+          退出登录
         </button>
       </div>
-    </header>
+    </aside>
 
-    <!-- 主内容区 -->
-    <main class="main">
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
 
-      <!-- 单行横向可滑动面包屑导航 -->
-      <div class="breadcrumb-container">
-        <nav class="breadcrumb" id="breadcrumb" aria-label="目录路径">
-          <button class="breadcrumb-item root" data-prefix="">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bc-icon">
-              <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-              <polyline points="9 22 9 12 15 12 15 22"/>
+    <!-- 右侧主工作区 -->
+    <div class="content">
+      <!-- 顶部半透明毛玻璃导航栏 -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="btn-menu" class="btn-icon topbar-menu-btn" type="button" aria-label="打开侧边栏" aria-expanded="false" aria-controls="sidebar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="4" y1="6" x2="20" y2="6"/>
+              <line x1="4" y1="12" x2="20" y2="12"/>
+              <line x1="4" y1="18" x2="20" y2="18"/>
             </svg>
-            根目录
           </button>
-        </nav>
-      </div>
-
-      <!-- 工具栏（集成上传、新建文件夹、集中下载、集中删除） -->
-      <div class="toolbar">
-        <div class="toolbar-left">
-          <button id="btn-upload" class="btn btn-primary">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" x2="12" y1="3" y2="15"/>
-            </svg>
-            上传文件
-          </button>
-          <input type="file" id="file-input" multiple hidden aria-hidden="true" />
-          <button id="btn-mkdir" class="btn btn-secondary">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px">
-              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
-              <line x1="12" x2="12" y1="10" y2="16"/>
-              <line x1="9" x2="15" y1="13" y2="13"/>
-            </svg>
-            新建文件夹
-          </button>
-          <button id="btn-batch-download" class="btn btn-secondary" hidden title="下载勾选项">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" x2="12" y1="15" y2="3"/>
-            </svg>
-            <span id="text-batch-download">下载</span>
-          </button>
-          <button id="btn-batch-delete" class="btn btn-danger-ghost" hidden title="删除勾选项">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px">
-              <path d="M3 6h18"/>
-              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-            </svg>
-            <span id="text-batch-delete">删除</span>
-          </button>
-          <button id="btn-batch-move" class="btn btn-secondary" hidden title="移动勾选项到指定文件夹">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px">
-              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
-              <polyline points="12 11 15 14 12 17"/>
-              <line x1="9" x2="15" y1="14" y2="14"/>
-            </svg>
-            <span id="text-batch-move">移动</span>
-          </button>
-          <button id="btn-batch-rename" class="btn btn-secondary" hidden title="重命名选中项">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:5px">
-              <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-              <path d="m15 5 4 4"/>
-            </svg>
-            <span id="text-batch-rename">重命名</span>
-          </button>
+          <span id="topbar-title" class="topbar-title">全部文件</span>
         </div>
-        <div class="toolbar-right">
-          <span id="file-count" class="file-count"></span>
-          <button id="btn-refresh" class="btn-icon" title="刷新列表" aria-label="刷新列表">
+        <div class="topbar-right">
+          <button id="btn-refresh" class="btn-icon" type="button" title="刷新列表" aria-label="刷新列表">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
               <path d="M3 3v5h5"/>
@@ -193,103 +191,315 @@
               <path d="M16 16h5v5"/>
             </svg>
           </button>
-        </div>
-      </div>
-
-      <!-- 拖拽上传遮罩层 -->
-      <div id="drop-overlay" class="drop-overlay" hidden aria-hidden="true">
-        <div class="drop-card">
-          <div class="drop-icon-box">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" x2="12" y1="3" y2="15"/>
-            </svg>
+          <!-- 视图切换胶囊 -->
+          <div class="view-switch-capsule">
+            <button id="btn-view-list" class="view-btn active" type="button" title="列表视图" aria-label="列表视图">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="8" x2="21" y1="6" y2="6"/>
+                <line x1="8" x2="21" y1="12" y2="12"/>
+                <line x1="8" x2="21" y1="18" y2="18"/>
+                <line x1="3" x2="3.01" y1="6" y2="6"/>
+                <line x1="3" x2="3.01" y1="12" y2="12"/>
+                <line x1="3" x2="3.01" y1="18" y2="18"/>
+              </svg>
+            </button>
+            <button id="btn-view-grid" class="view-btn" type="button" title="网格视图" aria-label="网格视图">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="7" height="7" x="3" y="3" rx="1"/>
+                <rect width="7" height="7" x="14" y="3" rx="1"/>
+                <rect width="7" height="7" x="14" y="14" rx="1"/>
+                <rect width="7" height="7" x="3" y="14" rx="1"/>
+              </svg>
+            </button>
           </div>
-          <h3>释放文件即可上传</h3>
-          <p>文件将保存到当前目录</p>
-        </div>
-      </div>
-
-      <!-- 上传任务队列卡片 -->
-      <div id="upload-panel" class="upload-panel" hidden>
-        <div class="upload-panel-header">
-          <span class="upload-panel-title">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" x2="12" y1="3" y2="15"/>
+          <button id="btn-logout" class="btn btn-ghost btn-sm topbar-logout" type="button" title="锁定并退出">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" x2="9" y1="12" y2="12"/>
             </svg>
-            上传队列
-          </span>
-          <div class="upload-panel-actions">
-            <button id="btn-clear-done" class="btn btn-ghost btn-xs">清除已完成</button>
-            <button id="btn-close-panel" class="btn-icon btn-xs" aria-label="关闭面板">✕</button>
+            <span>退出</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 主内容区 -->
+      <main class="main">
+
+        <!-- 路径面包屑与桌面常驻操作栏 -->
+        <div class="workspace-bar">
+          <div class="breadcrumb-container">
+            <nav class="breadcrumb" id="breadcrumb" aria-label="目录路径">
+              <button class="breadcrumb-item root" type="button" data-prefix="">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bc-icon">
+                  <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                  <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+                根目录
+              </button>
+            </nav>
+          </div>
+
+          <div class="toolbar-actions">
+            <span id="file-count" class="file-count"></span>
+            <input type="file" id="file-input" multiple hidden aria-hidden="true" />
+            <div class="desktop-primary-actions">
+              <button id="btn-mkdir" class="btn btn-secondary" type="button">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+                  <line x1="12" x2="12" y1="10" y2="16"/>
+                  <line x1="9" x2="15" y1="13" y2="13"/>
+                </svg>
+                <span>新建文件夹</span>
+              </button>
+              <button id="btn-upload" class="btn btn-primary" type="button">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" x2="12" y1="3" y2="15"/>
+                </svg>
+                <span>上传文件</span>
+              </button>
+            </div>
           </div>
         </div>
-        <div id="upload-list" class="upload-list"></div>
-      </div>
 
-      <!-- 主文件列表卡片容器 (左侧勾选框 + 点击整行直达预览) -->
-      <div id="list-container" class="list-container">
-        <!-- 列表视图 -->
-        <div id="file-list-view" class="file-list-view">
-          <table class="file-table" id="file-table">
-            <thead>
-              <tr>
-                <th class="col-checkbox">
-                  <input type="checkbox" id="select-all-checkbox" class="custom-checkbox" aria-label="全选" />
-                </th>
-                <th class="col-name" data-sort="name">
-                  名称
-                  <span class="sort-icon">↕</span>
-                </th>
-                <th class="col-size" data-sort="size">
-                  大小
-                  <span class="sort-icon">↕</span>
-                </th>
-                <th class="col-date" data-sort="date">
-                  修改时间
-                  <span class="sort-icon">↕</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody id="file-tbody"></tbody>
-          </table>
+        <!-- 本地分类筛选提示条 -->
+        <div id="filter-banner" class="filter-banner" hidden>
+          <span id="filter-banner-text" class="filter-banner-text"></span>
+          <button id="btn-clear-filter" class="btn btn-ghost btn-xs" type="button">返回目录视图</button>
+        </div>
 
-          <!-- 空目录提示 -->
-          <div id="empty-hint" class="empty-hint" hidden>
-            <div class="empty-icon-wrap">
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+        <!-- 拖拽上传遮罩层 -->
+        <div id="drop-overlay" class="drop-overlay" hidden aria-hidden="true">
+          <div class="drop-card">
+            <div class="drop-icon-box">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" x2="12" y1="3" y2="15"/>
               </svg>
             </div>
-            <p class="empty-title">当前目录为空</p>
-            <p class="empty-sub">拖拽文件到此处，或点击上传按钮添加文件</p>
+            <h3>释放文件即可上传</h3>
+            <p>文件将保存到当前目录</p>
           </div>
         </div>
 
-        <!-- 网格卡片视图 -->
-        <div id="file-grid-view" class="file-grid-view" hidden>
-          <div id="file-grid" class="file-grid"></div>
-          <div id="empty-hint-grid" class="empty-hint" hidden>
-            <div class="empty-icon-wrap">
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
-              </svg>
+        <!-- 主文件列表卡片容器 -->
+        <div id="list-container" class="list-container">
+          <!-- 列表视图 -->
+          <div id="file-list-view" class="file-list-view">
+            <table class="file-table" id="file-table">
+              <thead>
+                <tr>
+                  <th class="col-checkbox">
+                    <input type="checkbox" id="select-all-checkbox" class="custom-checkbox" aria-label="全选" />
+                  </th>
+                  <th class="col-name" data-sort="name">
+                    名称
+                    <span class="sort-icon">↕</span>
+                  </th>
+                  <th class="col-size" data-sort="size">
+                    大小
+                    <span class="sort-icon">↕</span>
+                  </th>
+                  <th class="col-date" data-sort="date">
+                    修改时间
+                    <span class="sort-icon">↕</span>
+                  </th>
+                  <th class="col-actions" aria-label="操作"></th>
+                </tr>
+              </thead>
+              <tbody id="file-tbody"></tbody>
+            </table>
+
+            <!-- 空目录提示 -->
+            <div id="empty-hint" class="empty-hint" hidden>
+              <div class="empty-icon-wrap">
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+                </svg>
+              </div>
+              <p class="empty-title">当前目录为空</p>
+              <p class="empty-sub">拖拽文件到此处，或点击上传按钮添加文件</p>
             </div>
-            <p class="empty-title">当前目录为空</p>
-            <p class="empty-sub">拖拽文件到此处，或点击上传按钮添加文件</p>
+          </div>
+
+          <!-- 网格卡片视图 -->
+          <div id="file-grid-view" class="file-grid-view" hidden>
+            <div id="file-grid" class="file-grid"></div>
+            <div id="empty-hint-grid" class="empty-hint" hidden>
+              <div class="empty-icon-wrap">
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+                </svg>
+              </div>
+              <p class="empty-title">当前目录为空</p>
+              <p class="empty-sub">拖拽文件到此处，或点击上传按钮添加文件</p>
+            </div>
+          </div>
+
+          <!-- Shimmer 骨架屏 -->
+          <div id="loading-hint" class="skeleton-list" hidden aria-busy="true" aria-label="正在加载文件">
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:42%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:58%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:36%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:50%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:46%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:62%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:38%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
+            <div class="skeleton-row"><span class="skeleton-box sk-icon"></span><span class="skeleton-box sk-name" style="width:54%"></span><span class="skeleton-box sk-meta"></span><span class="skeleton-box sk-date"></span></div>
           </div>
         </div>
+      </main>
+    </div>
 
-        <!-- 加载动画 -->
-        <div id="loading-hint" class="loading-hint" hidden>
-          <div class="spinner-modern"></div>
-          <p>加载中...</p>
+    <!-- 右下角可折叠悬浮上传队列卡片 -->
+    <div id="upload-panel" class="upload-panel" hidden>
+      <div class="upload-panel-header">
+        <button id="btn-toggle-upload-panel" class="upload-panel-toggle" type="button" aria-expanded="true" title="折叠或展开上传队列">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" x2="12" y1="3" y2="15"/>
+          </svg>
+          <span>上传队列</span>
+          <span id="upload-panel-badge" class="upload-panel-badge">0</span>
+          <svg class="upload-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <div class="upload-panel-actions">
+          <button id="btn-clear-done" class="btn btn-ghost btn-xs" type="button">清除已完成</button>
+          <button id="btn-close-panel" class="btn-icon btn-xs" type="button" aria-label="关闭面板">✕</button>
         </div>
       </div>
-    </main>
+      <div id="upload-list" class="upload-list"></div>
+    </div>
+
+    <!-- 底部悬浮批量操作条（勾选后弹出：下载 → 删除 → 移动 → 重命名） -->
+    <div id="selection-bar" class="selection-bar" hidden role="region" aria-label="批量操作">
+      <span id="selection-count" class="selection-count">已选择 0 项</span>
+      <div class="selection-bar-actions">
+        <button id="btn-batch-download" class="btn btn-secondary btn-sm" type="button" title="下载勾选项">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" x2="12" y1="15" y2="3"/>
+          </svg>
+          <span id="text-batch-download">下载</span>
+        </button>
+        <button id="btn-batch-delete" class="btn btn-danger-ghost btn-sm" type="button" title="删除勾选项">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"/>
+            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+          </svg>
+          <span id="text-batch-delete">删除</span>
+        </button>
+        <button id="btn-batch-move" class="btn btn-secondary btn-sm" type="button" title="移动勾选项到指定文件夹">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+            <polyline points="12 11 15 14 12 17"/>
+            <line x1="9" x2="15" y1="14" y2="14"/>
+          </svg>
+          <span id="text-batch-move">移动</span>
+        </button>
+        <button id="btn-batch-rename" class="btn btn-secondary btn-sm" type="button" title="重命名选中项">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+            <path d="m15 5 4 4"/>
+          </svg>
+          <span id="text-batch-rename">重命名</span>
+        </button>
+        <button id="btn-selection-clear" class="btn btn-ghost btn-sm" type="button" title="取消选择">取消</button>
+      </div>
+    </div>
+
+    <!-- 手机端右下角 FAB 与菜单 -->
+    <div id="fab-backdrop" class="sheet-backdrop" hidden></div>
+    <div id="fab-menu" class="fab-menu" hidden role="menu" aria-label="快捷操作">
+      <button id="fab-btn-upload" class="fab-menu-item" type="button" role="menuitem">
+        <span class="fab-menu-icon is-blue">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" x2="12" y1="3" y2="15"/>
+          </svg>
+        </span>
+        <span>上传文件</span>
+      </button>
+      <button id="fab-btn-mkdir" class="fab-menu-item" type="button" role="menuitem">
+        <span class="fab-menu-icon is-amber">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+            <line x1="12" x2="12" y1="10" y2="16"/>
+            <line x1="9" x2="15" y1="13" y2="13"/>
+          </svg>
+        </span>
+        <span>新建文件夹</span>
+      </button>
+    </div>
+    <button id="fab-add" class="fab-add" type="button" aria-label="上传或新建" aria-expanded="false" aria-controls="fab-menu">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/>
+        <line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+    </button>
+
+    <!-- 手机端单项操作 Bottom Sheet -->
+    <div id="row-sheet-backdrop" class="sheet-backdrop" hidden></div>
+    <div id="row-sheet" class="bottom-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="row-sheet-name">
+      <div class="bottom-sheet-handle" aria-hidden="true"></div>
+      <div class="bottom-sheet-header">
+        <div id="row-sheet-icon" class="row-sheet-icon"></div>
+        <div class="row-sheet-info">
+          <div id="row-sheet-name" class="row-sheet-name"></div>
+          <div id="row-sheet-meta" class="row-sheet-meta"></div>
+        </div>
+      </div>
+      <div class="bottom-sheet-actions">
+        <button id="sheet-btn-preview" class="bottom-sheet-action" type="button" data-sheet-action="preview">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          <span>打开 / 预览</span>
+        </button>
+        <button id="sheet-btn-download" class="bottom-sheet-action" type="button" data-sheet-action="download">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" x2="12" y1="15" y2="3"/>
+          </svg>
+          <span>下载</span>
+        </button>
+        <button id="sheet-btn-rename" class="bottom-sheet-action" type="button" data-sheet-action="rename">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+            <path d="m15 5 4 4"/>
+          </svg>
+          <span>重命名</span>
+        </button>
+        <button id="sheet-btn-move" class="bottom-sheet-action" type="button" data-sheet-action="move">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+            <polyline points="12 11 15 14 12 17"/>
+            <line x1="9" x2="15" y1="14" y2="14"/>
+          </svg>
+          <span>移动到...</span>
+        </button>
+        <button id="sheet-btn-delete" class="bottom-sheet-action is-danger" type="button" data-sheet-action="delete">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"/>
+            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+          </svg>
+          <span>删除</span>
+        </button>
+      </div>
+      <button id="btn-row-sheet-cancel" class="bottom-sheet-cancel" type="button">取消</button>
+    </div>
 
   </div>
 
@@ -462,6 +672,6 @@
   ═══════════════════════════════════════════════ -->
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
-  <script type="module" src="/app.js?v=20261121_02"></script>
+  <script type="module" src="/app.js?v=20261121_03"></script>
 </body>
 </html>

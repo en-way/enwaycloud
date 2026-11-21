@@ -3,7 +3,16 @@
  * 文件及文件夹批量操作：新建目录、批量下载、递归原子删除、重命名、目录树移动（含同名拦截）
  */
 
-import { API, getFileName, escapeHtml, renderSvgIcon } from './config.js';
+import {
+  API,
+  formatSize,
+  formatDate,
+  getFileName,
+  getFileType,
+  escapeHtml,
+  renderSvgIcon,
+  renderFileBadge,
+} from './config.js';
 import { state, dom } from './state.js';
 import { apiFetch, downloadFile, showToast, showConfirm } from './api.js';
 import {
@@ -12,6 +21,20 @@ import {
   optimisticRemoveItems,
   optimisticMoveItems,
 } from './cache.js';
+import {
+  updateSelectionUI,
+  updateRowsSelectionClass,
+  clearSelection,
+} from './ui.js';
+
+let actionNavHandlers = {
+  onOpenFolder: () => {},
+  onOpenPreview: () => {},
+};
+
+export function registerActionNavHandlers(handlers) {
+  actionNavHandlers = { ...actionNavHandlers, ...handlers };
+}
 
 // ─── 新建文件夹 ────────────────────────────────────────────────────────────────
 export function openMkdirModal() {
@@ -21,13 +44,13 @@ export function openMkdirModal() {
   setTimeout(() => dom.mkdirInput.focus(), 80);
 }
 
-dom.btnMkdir.addEventListener('click', openMkdirModal);
+dom.btnMkdir?.addEventListener('click', openMkdirModal);
 
-dom.btnMkdirCancel.addEventListener('click', () => {
+dom.btnMkdirCancel?.addEventListener('click', () => {
   dom.mkdirModal.hidden = true;
 });
 
-dom.mkdirForm.addEventListener('submit', async e => {
+dom.mkdirForm?.addEventListener('submit', async e => {
   e.preventDefault();
   const name = dom.mkdirInput.value.trim();
   if (!name || /[/\\:*?"<>|]/.test(name)) {
@@ -64,25 +87,25 @@ dom.mkdirForm.addEventListener('submit', async e => {
   }
 });
 
-// ─── 批量下载 & 递归批量删除 ──────────────────────────────────────────────────
-dom.btnBatchDownload?.addEventListener('click', () => {
+// ─── 批量下载 & 递归批量删除（浮动操作条与行内操作共用） ─────────────────────────
+function triggerBatchDownload() {
   if (state.selectedKeys.size === 0) return;
 
-  const filesToDownload = state.files.filter(f => state.selectedKeys.has(f.key));
-  if (filesToDownload.length === 0) {
+  const fileKeys = Array.from(state.selectedKeys).filter(k => !k.endsWith('/'));
+  if (fileKeys.length === 0) {
     showToast('选中的项目中没有可下载的文件（文件夹不支持直接下载）', 'warning');
     return;
   }
 
-  showToast(`正在开始下载 ${filesToDownload.length} 个文件...`, 'info');
-  filesToDownload.forEach((f, index) => {
+  showToast(`正在开始下载 ${fileKeys.length} 个文件...`, 'info');
+  fileKeys.forEach((key, index) => {
     setTimeout(() => {
-      downloadFile(f.key);
+      downloadFile(key);
     }, index * 200);
   });
-});
+}
 
-dom.btnBatchDelete?.addEventListener('click', async () => {
+export async function deleteSelected() {
   const count = state.selectedKeys.size;
   if (count === 0) return;
 
@@ -143,7 +166,11 @@ dom.btnBatchDelete?.addEventListener('click', async () => {
   } catch (err) {
     showToast('批量删除异常：' + err.message, 'error');
   }
-});
+}
+
+dom.btnBatchDownload?.addEventListener('click', triggerBatchDownload);
+dom.btnBatchDelete?.addEventListener('click', deleteSelected);
+dom.btnSelectionClear?.addEventListener('click', clearSelection);
 
 // ─── 文件与文件夹重命名系统 ──────────────────────────────────────────────────
 let currentRenamingKey = null;
@@ -227,7 +254,10 @@ async function submitRename(e) {
     const parentPrefix = key.includes('/') ? key.slice(0, key.lastIndexOf('/') + 1) : '';
     toKey = parentPrefix + newName;
 
-    if (state.files.some(f => f.key === toKey)) {
+    const exists = state.allObjects
+      ? state.allObjects.some(o => o.key === toKey)
+      : state.files.some(f => f.key === toKey);
+    if (exists) {
       dom.renameError.textContent = '当前目录下已存在同名文件';
       dom.renameError.hidden = false;
       return;
@@ -339,13 +369,23 @@ export function openMoveModal() {
   const allFolders = getAllFolderPaths();
   let treeHtml = '';
 
+  const firstParent = selected[0].endsWith('/')
+    ? selected[0].slice(0, selected[0].lastIndexOf('/', selected[0].length - 2) + 1)
+    : (selected[0].includes('/') ? selected[0].slice(0, selected[0].lastIndexOf('/') + 1) : '');
+  const allSameParent = selected.every(k => {
+    const p = k.endsWith('/')
+      ? k.slice(0, k.lastIndexOf('/', k.length - 2) + 1)
+      : (k.includes('/') ? k.slice(0, k.lastIndexOf('/') + 1) : '');
+    return p === firstParent;
+  });
+
   allFolders.forEach(f => {
     const isRoot = f === '';
     const depth = isRoot ? 0 : f.split('/').filter(Boolean).length;
     const displayName = isRoot ? '根目录 /' : getFileName(f.slice(0, -1));
     const padLeft = 12 + depth * 16;
 
-    const isCurrent = f === state.currentPrefix;
+    const isCurrent = allSameParent && f === firstParent;
     let isSelfOrChild = false;
     for (const sel of selected) {
       if (sel.endsWith('/') && (f === sel || f.startsWith(sel))) {
@@ -472,4 +512,166 @@ dom.btnMoveCancel?.addEventListener('click', closeMoveModal);
 dom.btnMoveConfirm?.addEventListener('click', submitMove);
 dom.moveModal?.addEventListener('click', e => {
   if (e.target === dom.moveModal) closeMoveModal();
+});
+
+// ─── 单项操作路由（桌面 Hover 快捷按钮 & 手机 Bottom Sheet 共用） ─────────────
+function findItemEntry(key, providedEntry) {
+  if (providedEntry) return providedEntry;
+  if (key.endsWith('/')) return { isFolder: true, key, file: null };
+  const file = state.files.find(f => f.key === key)
+    || (Array.isArray(state.allObjects) ? state.allObjects.find(o => o.key === key) : null);
+  return { isFolder: false, key, file };
+}
+
+export async function runSingleItemAction(action, key, providedEntry = null) {
+  const entry = findItemEntry(key, providedEntry);
+  switch (action) {
+    case 'preview':
+      if (entry.isFolder) {
+        actionNavHandlers.onOpenFolder(entry.key);
+      } else if (entry.file) {
+        actionNavHandlers.onOpenPreview(entry.file);
+      }
+      break;
+    case 'download':
+      if (entry.isFolder) {
+        showToast('文件夹不支持直接下载', 'warning');
+      } else {
+        downloadFile(entry.key);
+      }
+      break;
+    case 'rename':
+      state.selectedKeys = new Set([entry.key]);
+      updateSelectionUI();
+      updateRowsSelectionClass();
+      openRenameModal();
+      break;
+    case 'move':
+      state.selectedKeys = new Set([entry.key]);
+      updateSelectionUI();
+      updateRowsSelectionClass();
+      openMoveModal();
+      break;
+    case 'delete':
+      state.selectedKeys = new Set([entry.key]);
+      updateSelectionUI();
+      updateRowsSelectionClass();
+      await deleteSelected();
+      break;
+    default:
+      break;
+  }
+}
+
+// ─── 手机端 FAB 与快捷菜单 ─────────────────────────────────────────────────────
+export function isFabMenuOpen() {
+  return Boolean(dom.fabMenu && !dom.fabMenu.hidden);
+}
+
+export function openFabMenu() {
+  if (!dom.fabMenu || !dom.fabBackdrop) return;
+  dom.fabBackdrop.hidden = false;
+  dom.fabMenu.hidden = false;
+  requestAnimationFrame(() => {
+    dom.fabBackdrop.classList.add('is-open');
+    dom.fabMenu.classList.add('is-open');
+  });
+  dom.fabAdd?.classList.add('is-open');
+  dom.fabAdd?.setAttribute('aria-expanded', 'true');
+}
+
+export function closeFabMenu() {
+  if (!dom.fabMenu || !dom.fabBackdrop) return;
+  dom.fabBackdrop.classList.remove('is-open');
+  dom.fabMenu.classList.remove('is-open');
+  dom.fabAdd?.classList.remove('is-open');
+  dom.fabAdd?.setAttribute('aria-expanded', 'false');
+  setTimeout(() => {
+    if (!dom.fabMenu.classList.contains('is-open')) {
+      dom.fabMenu.hidden = true;
+      dom.fabBackdrop.hidden = true;
+    }
+  }, 200);
+}
+
+dom.fabAdd?.addEventListener('click', () => {
+  if (isFabMenuOpen()) closeFabMenu();
+  else openFabMenu();
+});
+dom.fabBackdrop?.addEventListener('click', closeFabMenu);
+dom.fabBtnUpload?.addEventListener('click', () => {
+  closeFabMenu();
+  dom.fileInput?.click();
+});
+dom.fabBtnMkdir?.addEventListener('click', () => {
+  closeFabMenu();
+  openMkdirModal();
+});
+
+// ─── 手机端单项 Bottom Sheet ──────────────────────────────────────────────────
+export function isRowSheetOpen() {
+  return Boolean(dom.rowSheet && !dom.rowSheet.hidden);
+}
+
+export function openRowSheet(entry) {
+  if (!dom.rowSheet || !dom.rowSheetBackdrop || !entry) return;
+  state.activeSheetItem = entry;
+
+  const isFolder = entry.isFolder;
+  const type = isFolder ? 'folder' : getFileType(entry.key);
+  const name = isFolder ? getFileName(entry.key.slice(0, -1)) : getFileName(entry.key);
+
+  if (dom.rowSheetIcon) {
+    dom.rowSheetIcon.innerHTML = renderFileBadge(type, 'md');
+  }
+  if (dom.rowSheetName) {
+    dom.rowSheetName.textContent = name;
+  }
+  if (dom.rowSheetMeta) {
+    dom.rowSheetMeta.textContent = isFolder
+      ? '文件夹'
+      : `${formatSize(entry.file?.size)} · ${formatDate(entry.file?.uploaded)}`;
+  }
+  if (dom.sheetBtnDownload) {
+    dom.sheetBtnDownload.hidden = isFolder;
+  }
+  const previewLabel = dom.sheetBtnPreview?.querySelector('span');
+  if (previewLabel) {
+    previewLabel.textContent = isFolder ? '打开文件夹' : '预览文件';
+  }
+
+  dom.rowSheetBackdrop.hidden = false;
+  dom.rowSheet.hidden = false;
+  document.body.style.overflow = 'hidden';
+  requestAnimationFrame(() => {
+    dom.rowSheetBackdrop.classList.add('is-open');
+    dom.rowSheet.classList.add('is-open');
+  });
+}
+
+export function closeRowSheet() {
+  if (!dom.rowSheet || !dom.rowSheetBackdrop) return;
+  dom.rowSheetBackdrop.classList.remove('is-open');
+  dom.rowSheet.classList.remove('is-open');
+  state.activeSheetItem = null;
+  document.body.style.overflow = '';
+  setTimeout(() => {
+    if (!dom.rowSheet.classList.contains('is-open')) {
+      dom.rowSheet.hidden = true;
+      dom.rowSheetBackdrop.hidden = true;
+    }
+  }, 240);
+}
+
+dom.rowSheetBackdrop?.addEventListener('click', closeRowSheet);
+dom.btnRowSheetCancel?.addEventListener('click', closeRowSheet);
+dom.rowSheet?.addEventListener('click', e => {
+  const btn = e.target.closest('[data-sheet-action]');
+  if (!btn) return;
+  const action = btn.dataset.sheetAction;
+  const entry = state.activeSheetItem;
+  closeRowSheet();
+  if (entry) {
+    runSingleItemAction(action, entry.key, entry);
+  }
 });

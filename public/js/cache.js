@@ -10,8 +10,18 @@ import {
   STORAGE_USAGE_KEY,
   TOTAL_CAPACITY_BYTES,
   formatSize,
+  getFileCategory,
+  escapeHtml,
 } from './config.js';
 import { state, dom, saveVirtualTreeToStorage } from './state.js';
+
+const STORAGE_CATEGORIES = [
+  { key: 'image',   label: '图片',   color: '#34C759' },
+  { key: 'video',   label: '视频',   color: '#AF52DE' },
+  { key: 'doc',     label: '文档',   color: '#007AFF' },
+  { key: 'archive', label: '压缩包', color: '#FF9500' },
+  { key: 'other',   label: '其他',   color: '#AEAEB2' },
+];
 
 let uiCallbacks = {
   renderFileList: () => {},
@@ -78,10 +88,50 @@ export function updateStorageUI(usedBytes) {
   if (!dom.storageBadge) return;
   dom.storageBadge.hidden = false;
   const pct = Math.min(100, Math.max(0, (state.totalUsedBytes / TOTAL_CAPACITY_BYTES) * 100));
-  dom.storageBarFill.style.width = pct.toFixed(1) + '%';
-  dom.storageBarFill.classList.toggle('warning', pct >= 80 && pct < 95);
-  dom.storageBarFill.classList.toggle('danger', pct >= 95);
-  dom.storageText.textContent = `${formatSize(state.totalUsedBytes)} / 10 GB`;
+  if (dom.storageBarFill) {
+    dom.storageBarFill.style.width = pct.toFixed(1) + '%';
+    dom.storageBarFill.classList.toggle('warning', pct >= 80 && pct < 95);
+    dom.storageBarFill.classList.toggle('danger', pct >= 95);
+  }
+  if (dom.storageText) {
+    dom.storageText.textContent = `${formatSize(state.totalUsedBytes)} / 10 GB`;
+  }
+
+  // 基于本地虚拟树计算分类容量分段，零新增接口请求
+  if (dom.storageBarSegments && dom.storageLegend) {
+    if (Array.isArray(state.allObjects) && state.totalUsedBytes > 0) {
+      const counts = { image: 0, video: 0, doc: 0, archive: 0, other: 0 };
+      let accounted = 0;
+      for (const obj of state.allObjects) {
+        if (!obj || !obj.key || obj.key.endsWith('/')) continue;
+        const size = Number(obj.size) || 0;
+        if (size <= 0) continue;
+        const cat = getFileCategory(obj.key);
+        counts[cat] = (counts[cat] || 0) + size;
+        accounted += size;
+      }
+      if (accounted > 0) {
+        dom.storageBarSegments.hidden = false;
+        if (dom.storageBarFill) dom.storageBarFill.hidden = true;
+        dom.storageBarSegments.innerHTML = STORAGE_CATEGORIES
+          .filter(c => counts[c.key] > 0)
+          .map(c => {
+            const segPct = Math.min(100, (counts[c.key] / TOTAL_CAPACITY_BYTES) * 100);
+            const title = `${c.label}: ${formatSize(counts[c.key])}`;
+            return `<span class="storage-bar-seg" style="width:${segPct.toFixed(3)}%;background:${c.color}" title="${escapeHtml(title)}"></span>`;
+          }).join('');
+        dom.storageLegend.innerHTML = STORAGE_CATEGORIES
+          .filter(c => counts[c.key] > 0)
+          .map(c => `<span class="storage-legend-item"><i class="storage-dot" style="background:${c.color}"></i><span>${c.label} ${escapeHtml(formatSize(counts[c.key]))}</span></span>`)
+          .join('');
+        return;
+      }
+    }
+    dom.storageBarSegments.hidden = true;
+    dom.storageBarSegments.innerHTML = '';
+    if (dom.storageBarFill) dom.storageBarFill.hidden = false;
+    dom.storageLegend.innerHTML = '';
+  }
 }
 
 export function clearDirCache() {
@@ -101,6 +151,8 @@ export function clearDirCache() {
   state.allObjects = null;
   state.isVirtualTree = false;
   state.totalUsedBytes = 0;
+  state.typeFilter = 'all';
+  state.sidebarExpanded = new Set(['']);
   updateStorageUI(0);
 }
 
