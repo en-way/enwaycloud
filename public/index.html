@@ -8,7 +8,7 @@
   <meta http-equiv="Expires" content="0" />
   <meta name="description" content="基于 Cloudflare R2 的轻量级个人网页云盘" />
   <title>R2 云盘</title>
-  <link rel="stylesheet" href="/style.css?v=20261121_03" />
+  <link rel="stylesheet" href="/style.css?v=20261121_04" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📁</text></svg>" />
 </head>
 <body>
@@ -183,14 +183,6 @@
           <span id="topbar-title" class="topbar-title">全部文件</span>
         </div>
         <div class="topbar-right">
-          <button id="btn-refresh" class="btn-icon" type="button" title="刷新列表" aria-label="刷新列表">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-              <path d="M3 3v5h5"/>
-              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-              <path d="M16 16h5v5"/>
-            </svg>
-          </button>
           <!-- 视图切换胶囊 -->
           <div class="view-switch-capsule">
             <button id="btn-view-list" class="view-btn active" type="button" title="列表视图" aria-label="列表视图">
@@ -242,6 +234,15 @@
 
           <div class="toolbar-actions">
             <span id="file-count" class="file-count"></span>
+            <button id="btn-refresh" class="btn btn-secondary btn-refresh" type="button" title="刷新列表" aria-label="刷新列表">
+              <svg class="refresh-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5"/>
+                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                <path d="M16 16h5v5"/>
+              </svg>
+              <span class="refresh-label">刷新</span>
+            </button>
             <input type="file" id="file-input" multiple hidden aria-hidden="true" />
             <div class="desktop-primary-actions">
               <button id="btn-mkdir" class="btn btn-secondary" type="button">
@@ -672,6 +673,6 @@
   ═══════════════════════════════════════════════ -->
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
-  <script type="module" src="/app.js?v=20261121_03"></script>
+  <script type="module" src="/app.js?v=20261121_04"></script>
 </body>
 </html>

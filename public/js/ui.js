@@ -80,6 +80,10 @@ export function closeDrawer() {
 
 // ─── 骨架屏加载态 ──────────────────────────────────────────────────────────────
 export function setLoading(loading) {
+  if (dom.btnRefresh) {
+    dom.btnRefresh.classList.toggle('is-spinning', loading);
+    dom.btnRefresh.disabled = loading;
+  }
   if (!dom.loadingHint) return;
   dom.loadingHint.hidden = !loading;
   if (loading) {
@@ -136,7 +140,7 @@ dom.btnClearFilter?.addEventListener('click', () => {
 });
 
 // ─── 侧边栏虚拟目录树（纯本地推导） ───────────────────────────────────────────
-function expandAncestors(prefix) {
+export function expandAncestors(prefix) {
   state.sidebarExpanded.add('');
   if (!prefix) return;
   const parts = prefix.split('/').filter(Boolean);
@@ -185,7 +189,6 @@ function collectSidebarFolderChildren() {
 
 export function renderSidebarTree() {
   if (!dom.sidebarTree) return;
-  expandAncestors(state.currentPrefix);
   const childrenMap = collectSidebarFolderChildren();
 
   const renderNodes = (parentPrefix, depth) => {
@@ -197,14 +200,14 @@ export function renderSidebarTree() {
 
     return children.map(folderPrefix => {
       const subChildren = childrenMap.get(folderPrefix);
-      const hasChildren = subChildren && subChildren.size > 0;
+      const hasChildren = Boolean(subChildren && subChildren.size > 0);
       const expanded = state.sidebarExpanded.has(folderPrefix);
       const isActive = state.typeFilter === 'all' && state.currentPrefix === folderPrefix;
       const label = getFileName(folderPrefix.slice(0, -1));
       const indent = 10 + depth * 14;
 
       return `
-        <div class="tree-node" role="treeitem" aria-expanded="${hasChildren ? String(expanded) : 'false'}">
+        <div class="tree-node ${hasChildren && expanded ? 'is-expanded' : ''}" data-tree-node="${escapeHtml(folderPrefix)}" role="treeitem" aria-expanded="${hasChildren ? String(expanded) : 'false'}">
           <div class="tree-row ${isActive ? 'active' : ''}" style="padding-left:${indent}px">
             ${hasChildren
               ? `<button type="button" class="tree-toggle ${expanded ? 'is-expanded' : ''}" data-tree-toggle="${escapeHtml(folderPrefix)}" aria-label="展开或收起目录">
@@ -216,18 +219,20 @@ export function renderSidebarTree() {
               <span class="tree-label-text">${escapeHtml(label)}</span>
             </button>
           </div>
-          ${hasChildren && expanded ? `<div class="tree-children" role="group">${renderNodes(folderPrefix, depth + 1)}</div>` : ''}
+          ${hasChildren
+            ? `<div class="tree-children" role="group"><div class="tree-children-inner">${renderNodes(folderPrefix, depth + 1)}</div></div>`
+            : ''}
         </div>`;
     }).join('');
   };
 
   const rootChildren = childrenMap.get('');
-  const hasRootChildren = rootChildren && rootChildren.size > 0;
+  const hasRootChildren = Boolean(rootChildren && rootChildren.size > 0);
   const rootExpanded = state.sidebarExpanded.has('');
   const rootActive = state.typeFilter === 'all' && state.currentPrefix === '';
 
   dom.sidebarTree.innerHTML = `
-    <div class="tree-node" role="treeitem" aria-expanded="${hasRootChildren ? String(rootExpanded) : 'false'}">
+    <div class="tree-node ${hasRootChildren && rootExpanded ? 'is-expanded' : ''}" data-tree-node="" role="treeitem" aria-expanded="${hasRootChildren ? String(rootExpanded) : 'false'}">
       <div class="tree-row ${rootActive ? 'active' : ''}" style="padding-left:10px">
         ${hasRootChildren
           ? `<button type="button" class="tree-toggle ${rootExpanded ? 'is-expanded' : ''}" data-tree-toggle="" aria-label="展开或收起根目录">
@@ -239,7 +244,9 @@ export function renderSidebarTree() {
           <span class="tree-label-text">根目录</span>
         </button>
       </div>
-      ${hasRootChildren && rootExpanded ? `<div class="tree-children" role="group">${renderNodes('', 1)}</div>` : ''}
+      ${hasRootChildren
+        ? `<div class="tree-children" role="group"><div class="tree-children-inner">${renderNodes('', 1)}</div></div>`
+        : ''}
     </div>`;
 }
 
@@ -248,12 +255,19 @@ dom.sidebarTree?.addEventListener('click', e => {
   if (toggleBtn) {
     e.stopPropagation();
     const pfx = toggleBtn.dataset.treeToggle || '';
-    if (state.sidebarExpanded.has(pfx)) {
+    const isExpanded = state.sidebarExpanded.has(pfx);
+    if (isExpanded) {
       state.sidebarExpanded.delete(pfx);
     } else {
       state.sidebarExpanded.add(pfx);
     }
-    renderSidebarTree();
+    const nextExpanded = !isExpanded;
+    const node = toggleBtn.closest('.tree-node');
+    if (node) {
+      node.classList.toggle('is-expanded', nextExpanded);
+      node.setAttribute('aria-expanded', String(nextExpanded));
+    }
+    toggleBtn.classList.toggle('is-expanded', nextExpanded);
     return;
   }
 

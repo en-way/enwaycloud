@@ -24,6 +24,7 @@ import {
   closeDrawer,
   isDrawerOpen,
   clearSelection,
+  expandAncestors,
 } from './js/ui.js';
 import { openPreview, closePreview } from './js/preview.js';
 import './js/upload.js';
@@ -169,8 +170,12 @@ dom.drawerBackdrop?.addEventListener('click', closeDrawer);
 
 // ─── 文件数据加载 (全盘轻量虚拟树 + localStorage 持久化 + 请求合并) ───────────────
 export async function loadFiles(prefix = '', forceRefresh = false) {
+  const prevPrefix = state.currentPrefix;
   state.loading = true;
   state.currentPrefix = prefix;
+  if (prefix !== prevPrefix) {
+    expandAncestors(prefix);
+  }
   state.typeFilter = 'all';
   state.selectedKeys.clear();
   updateSelectionUI();

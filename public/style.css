@@ -278,15 +278,19 @@ input[type="password"]::-ms-clear {
 }
 
 .tree-toggle {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--text-tertiary);
-  border-radius: 5px;
+  border-radius: 6px;
   flex-shrink: 0;
-  transition: transform 0.18s var(--ease-out-expo), color 0.15s;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tree-toggle svg {
+  transition: transform 0.2s var(--ease-out-expo);
 }
 
 .tree-toggle:hover {
@@ -294,13 +298,29 @@ input[type="password"]::-ms-clear {
   background: rgba(15, 23, 42, 0.06);
 }
 
-.tree-toggle.is-expanded {
+.tree-node.is-expanded > .tree-row .tree-toggle svg,
+.tree-toggle.is-expanded svg {
   transform: rotate(90deg);
 }
 
 .tree-toggle-spacer {
-  width: 20px;
+  width: 24px;
   flex-shrink: 0;
+}
+
+.tree-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.22s var(--ease-out-expo);
+}
+
+.tree-node.is-expanded > .tree-children {
+  grid-template-rows: 1fr;
+}
+
+.tree-children-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .tree-label-btn {
@@ -2304,7 +2324,23 @@ body.has-selection .fab-add {
   display: none !important;
 }
 
-/* ─── 17. 双端响应式自适应 (<900px 手机端 / 平板端) ─────────────────────────── */
+/* ─── 17. 双端响应式自适应 (PC >=900px / 手机端 <900px) ────────────────────── */
+.btn-refresh .refresh-icon {
+  flex-shrink: 0;
+}
+
+.btn-refresh.is-spinning .refresh-icon {
+  animation: spin 0.75s linear infinite;
+}
+
+@media (min-width: 900px) {
+  .sidebar-close-btn,
+  .topbar-menu-btn,
+  .sidebar-logout-btn {
+    display: none !important;
+  }
+}
+
 @media (max-width: 899px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -2381,7 +2417,26 @@ body.has-selection .fab-add {
   }
 
   .toolbar-actions {
-    justify-content: flex-end;
+    justify-content: space-between;
+  }
+
+  .btn-refresh {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+  }
+
+  .btn-refresh .refresh-label {
+    display: none;
+  }
+
+  .tree-toggle {
+    width: 32px;
+    height: 32px;
+  }
+
+  .tree-toggle-spacer {
+    width: 32px;
   }
 
   /* 列表在手机端仅显示勾选框 + 文件信息 + 更多操作 */
