@@ -43,9 +43,34 @@ export function loadScript(src) {
   return promise;
 }
 
+const HEIC_TO_SRC = '/vendor/heic-to.min.js';
+export function loadHeicToModule() {
+  if (scriptPromiseCache.has(HEIC_TO_SRC)) return scriptPromiseCache.get(HEIC_TO_SRC);
+  const promise = import(HEIC_TO_SRC).catch(err => {
+    scriptPromiseCache.delete(HEIC_TO_SRC);
+    throw new Error('无法加载 HEIC 解码模块：' + (err?.message || HEIC_TO_SRC));
+  });
+  scriptPromiseCache.set(HEIC_TO_SRC, promise);
+  return promise;
+}
+
 let currentPreviewCleanup = null;
 let previewSessionId = 0;
 let currentPreviewAbort = null;
+let gallerySlideToken = 0;
+let prefetchTimer = null;
+let prefetchAbort = null;
+
+function cancelHeicPrefetch() {
+  if (prefetchTimer) {
+    clearTimeout(prefetchTimer);
+    prefetchTimer = null;
+  }
+  if (prefetchAbort) {
+    try { prefetchAbort.abort(); } catch (_) {}
+    prefetchAbort = null;
+  }
+}
 
 function isPreviewSessionActive(sessionId) {
   return sessionId === previewSessionId && !dom.previewModal.hidden;
@@ -242,8 +267,52 @@ async function renderPdfPreview(file, mediaUrl, sessionId) {
   }
 }
 
-// ─── 图片相册级预览（普通图片 + HEIC，支持左右切换 / 缩放 / 旋转 / 手势） ──────────
+// ─── 图片相册级预览（普通图片 + heic-to，支持左右切换 / 缩放 / 旋转 / 预解码） ─────
+function scheduleNextHeicPrefetch(gallery, currentIndex, sessionId, slideToken) {
+  cancelHeicPrefetch();
+  if (!Array.isArray(gallery) || currentIndex + 1 >= gallery.length) return;
+  const nextFile = gallery[currentIndex + 1];
+  const nextExt = getExt(nextFile.key);
+  if (nextExt !== 'heic' && nextExt !== 'heif') return;
+  if (getHeicCache(nextFile.key)) return;
+  if (/^((?!chrome|android).)*safari/i.test(navigator.userAgent)) return;
+
+  prefetchTimer = setTimeout(async () => {
+    prefetchTimer = null;
+    if (!isPreviewSessionActive(sessionId) || slideToken !== gallerySlideToken) return;
+    if (getHeicCache(nextFile.key)) return;
+
+    const ac = new AbortController();
+    prefetchAbort = ac;
+    try {
+      const nextUrl = buildMediaUrl(nextFile.key, nextFile.etag || nextFile.uploaded);
+      const [mod, res] = await Promise.all([
+        loadHeicToModule(),
+        apiFetch(nextUrl, { signal: ac.signal }),
+      ]);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      if (!isPreviewSessionActive(sessionId) || slideToken !== gallerySlideToken) return;
+
+      const outBlob = await mod.heicTo({ blob, type: 'image/jpeg', quality: 0.75 });
+      if (!isPreviewSessionActive(sessionId) || slideToken !== gallerySlideToken) return;
+
+      const resultBlob = Array.isArray(outBlob) ? outBlob[0] : outBlob;
+      if (resultBlob) {
+        setHeicCache(nextFile.key, URL.createObjectURL(resultBlob));
+      }
+    } catch (_) {
+      // 后台预解码静默失败，不影响当前主视图
+    } finally {
+      if (prefetchAbort === ac) prefetchAbort = null;
+    }
+  }, 300);
+}
+
 async function renderImageGallery(file, mediaUrl, sessionId, signal) {
+  cancelHeicPrefetch();
+  const mySlideToken = ++gallerySlideToken;
+
   const allImages = getCurrentOrderedFiles().filter(f => getFileType(f.key) === 'image');
   let gallery = allImages.length > 0 ? allImages : [file];
   let currentIndex = gallery.findIndex(f => f.key === file.key);
@@ -266,7 +335,7 @@ async function renderImageGallery(file, mediaUrl, sessionId, signal) {
       <div class="preview-image-viewport" id="preview-image-viewport">
         <div class="preview-loading-tip">
           <div class="spinner-modern"></div>
-          <p>${isHeic ? '正在解码 HEIC 高清图像...' : '正在加载图片...'}</p>
+          <p>${isHeic ? '正在加载解码组件与图片...' : '正在加载图片...'}</p>
         </div>
       </div>
       ${hasMultiple ? `
@@ -358,24 +427,26 @@ async function renderImageGallery(file, mediaUrl, sessionId, signal) {
   viewport?.addEventListener('touchend', onTouchEnd, { passive: true });
 
   currentPreviewCleanup = () => {
+    cancelHeicPrefetch();
     window.removeEventListener('keydown', onKeydown);
     viewport?.removeEventListener('touchstart', onTouchStart);
     viewport?.removeEventListener('touchend', onTouchEnd);
   };
 
   function mountImageElement(srcUrl) {
-    if (!isPreviewSessionActive(sessionId)) return;
+    if (!isPreviewSessionActive(sessionId) || mySlideToken !== gallerySlideToken) return;
     const img = document.createElement('img');
     img.className = 'preview-stage-img';
     img.alt = getFileName(file.key);
     img.src = srcUrl;
     img.style.opacity = '0';
     img.onload = () => {
-      if (!isPreviewSessionActive(sessionId)) return;
+      if (!isPreviewSessionActive(sessionId) || mySlideToken !== gallerySlideToken) return;
       img.style.opacity = '1';
+      scheduleNextHeicPrefetch(gallery, currentIndex, sessionId, mySlideToken);
     };
     img.onerror = () => {
-      if (!isPreviewSessionActive(sessionId)) return;
+      if (!isPreviewSessionActive(sessionId) || mySlideToken !== gallerySlideToken) return;
       viewport.innerHTML = `
         <div class="preview-fallback-card">
           <div class="preview-fallback-icon">${renderSvgIcon('image', 56)}</div>
@@ -413,27 +484,29 @@ async function renderImageGallery(file, mediaUrl, sessionId, signal) {
   }
 
   try {
-    await loadScript('/vendor/heic2any.min.js');
-    if (!isPreviewSessionActive(sessionId)) return;
-
-    const res = await apiFetch(mediaUrl, { signal });
+    const statusEl = viewport.querySelector('.preview-loading-tip p');
+    const [mod, res] = await Promise.all([
+      loadHeicToModule(),
+      apiFetch(mediaUrl, { signal }),
+    ]);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
-    if (!isPreviewSessionActive(sessionId)) return;
+    if (!isPreviewSessionActive(sessionId) || mySlideToken !== gallerySlideToken) return;
 
-    const conversionResult = await window.heic2any({
+    if (statusEl) statusEl.textContent = '正在解码 HEIC 图像...';
+    const conversionResult = await mod.heicTo({
       blob,
-      toType: 'image/jpeg',
-      quality: 0.85,
+      type: 'image/jpeg',
+      quality: 0.75,
     });
-    if (!isPreviewSessionActive(sessionId)) return;
+    if (!isPreviewSessionActive(sessionId) || mySlideToken !== gallerySlideToken) return;
 
     const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
     const objectUrl = URL.createObjectURL(resultBlob);
     setHeicCache(file.key, objectUrl);
     mountImageElement(objectUrl);
   } catch (err) {
-    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId)) return;
+    if (err.name === 'AbortError' || !isPreviewSessionActive(sessionId) || mySlideToken !== gallerySlideToken) return;
     renderPreviewFallback(
       file,
       'image',
@@ -444,7 +517,7 @@ async function renderImageGallery(file, mediaUrl, sessionId, signal) {
   }
 }
 
-// ─── DOCX / Excel / ZIP 预览（带 30 MB 内存保护上限） ───────────────────────────
+// ─── DOCX / Excel / ZIP 预览（并行拉取组件与文件 + 30 MB 内存保护上限） ─────────
 async function renderDocxPreview(file, mediaUrl, sessionId, signal) {
   if (file.size > MAX_RICH_PREVIEW_BYTES) {
     renderPreviewFallback(
@@ -459,17 +532,23 @@ async function renderDocxPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
-      <p>正在解析 Word 高保真文档...</p>
+      <p id="preview-stage-tip">正在加载文档组件与文件...</p>
     </div>`;
+  const stageTip = dom.previewBody.querySelector('#preview-stage-tip');
 
   try {
-    await loadScript('/vendor/jszip.min.js');
-    await loadScript('/vendor/docx-preview.min.js');
+    const [, res] = await Promise.all([
+      loadScript('/vendor/jszip.min.js'),
+      apiFetch(mediaUrl, { signal }),
+    ]);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     if (!isPreviewSessionActive(sessionId)) return;
 
-    const res = await apiFetch(mediaUrl, { signal });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const blob = await res.blob();
+    if (stageTip) stageTip.textContent = '正在排版渲染 Word 文档...';
+    const [, blob] = await Promise.all([
+      loadScript('/vendor/docx-preview.min.js'),
+      res.blob(),
+    ]);
     if (!isPreviewSessionActive(sessionId)) return;
 
     const wrap = document.createElement('div');
@@ -504,19 +583,24 @@ async function renderExcelPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
-      <p>正在解析 Excel 表格数据...</p>
+      <p id="preview-stage-tip">正在加载表格组件与文件...</p>
     </div>`;
+  const stageTip = dom.previewBody.querySelector('#preview-stage-tip');
 
   try {
-    await loadScript('/vendor/xlsx.full.min.js');
-    if (!isPreviewSessionActive(sessionId)) return;
-
     let buffer = xlsxPreviewCache.get(file.key);
     if (!buffer) {
-      const res = await apiFetch(mediaUrl, { signal });
+      const [, res] = await Promise.all([
+        loadScript('/vendor/xlsx.full.min.js'),
+        apiFetch(mediaUrl, { signal }),
+      ]);
       if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (!isPreviewSessionActive(sessionId)) return;
+      if (stageTip) stageTip.textContent = '正在解析工作簿...';
       buffer = await res.arrayBuffer();
       xlsxPreviewCache.set(file.key, buffer);
+    } else {
+      await loadScript('/vendor/xlsx.full.min.js');
     }
     if (!isPreviewSessionActive(sessionId)) return;
 
@@ -599,15 +683,19 @@ async function renderZipPreview(file, mediaUrl, sessionId, signal) {
   dom.previewBody.innerHTML = `
     <div class="preview-loading-tip">
       <div class="spinner-modern"></div>
-      <p>正在读取压缩包目录树...</p>
+      <p id="preview-stage-tip">正在加载解压组件与文件...</p>
     </div>`;
+  const stageTip = dom.previewBody.querySelector('#preview-stage-tip');
 
   try {
-    await loadScript('/vendor/jszip.min.js');
+    const [, res] = await Promise.all([
+      loadScript('/vendor/jszip.min.js'),
+      apiFetch(mediaUrl, { signal }),
+    ]);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     if (!isPreviewSessionActive(sessionId)) return;
 
-    const res = await apiFetch(mediaUrl, { signal });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (stageTip) stageTip.textContent = '正在解析压缩包目录树...';
     const blob = await res.blob();
     if (!isPreviewSessionActive(sessionId)) return;
 
@@ -686,6 +774,7 @@ async function renderZipPreview(file, mediaUrl, sessionId, signal) {
 
 // ─── 入口路由 ──────────────────────────────────────────────────────────────────
 export async function openPreview(file) {
+  cancelHeicPrefetch();
   if (currentPreviewAbort) {
     try { currentPreviewAbort.abort(); } catch (_) {}
   }
@@ -799,6 +888,8 @@ export async function openPreview(file) {
 
 export function closePreview() {
   previewSessionId++;
+  gallerySlideToken++;
+  cancelHeicPrefetch();
   if (currentPreviewAbort) {
     try { currentPreviewAbort.abort(); } catch (_) {}
     currentPreviewAbort = null;
