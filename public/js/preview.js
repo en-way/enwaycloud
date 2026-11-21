@@ -52,6 +52,7 @@ function isPreviewSessionActive(sessionId) {
 }
 
 function renderPreviewFallback(file, iconType, title, desc, isError = false) {
+  dom.previewBody.classList.remove('is-doc-mode');
   dom.previewBody.innerHTML = `
     <div class="preview-fallback-card">
       <div class="preview-fallback-icon">${renderSvgIcon(iconType, 56)}</div>
@@ -705,6 +706,8 @@ export async function openPreview(file) {
   dom.previewIcon.innerHTML = renderSvgIcon(type, 26);
   dom.previewFilename.textContent = name;
   dom.previewMeta.textContent = `${formatSize(file.size)}${file.uploaded ? ' · ' + formatDate(file.uploaded) : ''}`;
+  const isDocMode = type === 'pdf' || type === 'word' || type === 'excel' || type === 'zip' || type === 'text' || type === 'code';
+  dom.previewBody.classList.toggle('is-doc-mode', isDocMode);
   dom.previewBody.innerHTML = '';
 
   dom.previewModal.hidden = false;
@@ -810,6 +813,7 @@ export function closePreview() {
     el.pause();
     el.src = '';
   });
+  dom.previewBody.classList.remove('is-doc-mode');
   dom.previewBody.innerHTML = '';
   state.previewItem = null;
 }
