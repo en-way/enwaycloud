@@ -536,7 +536,7 @@ export async function openPreview(file) {
   dom.previewModal.hidden = false;
   document.body.style.overflow = 'hidden';
 
-  const mediaUrl = buildMediaUrl(file.key);
+  const mediaUrl = buildMediaUrl(file.key, file.etag || file.uploaded);
 
   if (ext === 'heic' || ext === 'heif') {
     await renderHeicPreview(file, mediaUrl, sessionId, abortController.signal);

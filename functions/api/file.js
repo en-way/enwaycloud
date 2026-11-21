@@ -155,11 +155,17 @@ async function handleGet(request, env, context) {
     return jsonResponse({ error: '缺少 key 参数' }, 400);
   }
 
-  // 1. 规范化边缘缓存检查：内部 Edge Cache 与客户端私密响应头分离
+  // 1. 规范化边缘缓存检查：剥离 ?auth= 与 ?v=，确保 purgeEdgeCache 按 key 精准清理
   const rangeHeader = request.headers.get('Range');
+  const versionParam = (url.searchParams.get('v') || '').trim();
+  const clientCacheControl = (versionParam && !forceDownload)
+    ? 'private, max-age=604800, immutable'
+    : 'private, max-age=300';
+
   const cache = typeof caches !== 'undefined' ? caches.default : null;
   const cacheUrl = new URL(request.url);
   cacheUrl.searchParams.delete('auth');
+  cacheUrl.searchParams.delete('v');
   const cacheKey = new Request(cacheUrl.toString(), {
     method: 'GET',
   });
@@ -168,7 +174,7 @@ async function handleGet(request, env, context) {
     try {
       const cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) {
-        return withHeaders(cachedResponse, { 'Cache-Control': 'private, max-age=300' });
+        return withHeaders(cachedResponse, { 'Cache-Control': clientCacheControl });
       }
     } catch (_) {}
   }
@@ -196,7 +202,7 @@ async function handleGet(request, env, context) {
         status: 304,
         headers: {
           'ETag': etag,
-          'Cache-Control': 'private, max-age=300',
+          'Cache-Control': clientCacheControl,
           'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
           'Accept-Ranges': 'bytes',
           'X-Content-Type-Options': 'nosniff',
@@ -206,7 +212,7 @@ async function handleGet(request, env, context) {
 
     const headers = new Headers({
       'Content-Type': contentType,
-      'Cache-Control': 'private, max-age=300',
+      'Cache-Control': clientCacheControl,
       'ETag': etag,
       'Last-Modified': object.uploaded ? object.uploaded.toUTCString() : '',
       'Accept-Ranges': 'bytes',

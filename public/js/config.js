@@ -14,7 +14,7 @@ export const API = {
   file:  '/api/file',
 };
 
-export const DIR_CACHE_TTL = 10 * 60 * 1000; // 10 分钟有效期
+export const DIR_CACHE_TTL = 60 * 60 * 1000; // 1 小时有效期
 export const STORAGE_CACHE_KEY = 'r2_drive_cache_v2';
 export const STORAGE_TREE_KEY  = 'r2_drive_tree_v2';
 export const STORAGE_USAGE_KEY = 'r2_drive_usage_v1';

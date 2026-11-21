@@ -6,9 +6,12 @@
 import { API, escapeHtml, getFileName } from './config.js';
 import { dom } from './state.js';
 
-export function buildMediaUrl(key) {
+export function buildMediaUrl(key, version) {
   const url = new URL(API.file, location.origin);
   url.searchParams.set('key', key);
+  if (version) {
+    url.searchParams.set('v', String(version));
+  }
   return url.toString();
 }
 

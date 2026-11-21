@@ -133,7 +133,7 @@ dom.btnLogout.addEventListener('click', async () => {
   showLogin();
 });
 
-// ─── 文件数据加载 (全盘轻量虚拟树 + sessionStorage 持久化 + 请求合并) ─────────────
+// ─── 文件数据加载 (全盘轻量虚拟树 + localStorage 持久化 + 请求合并) ───────────────
 export async function loadFiles(prefix = '', forceRefresh = false) {
   state.loading = true;
   state.currentPrefix = prefix;
@@ -154,7 +154,7 @@ export async function loadFiles(prefix = '', forceRefresh = false) {
     }
   }
 
-  // 2. 检查 sessionStorage / 内存缓存 (10 分钟保鲜)
+  // 2. 检查 localStorage / 内存缓存 (1 小时保鲜)
   const cached = dirCache.get(prefix);
   if (!forceRefresh && cached && (Date.now() - cached.timestamp < DIR_CACHE_TTL)) {
     state.folders = cached.folders || [];

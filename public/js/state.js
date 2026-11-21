@@ -12,7 +12,7 @@ try {
 
 export function loadVirtualTreeFromStorage() {
   try {
-    const raw = sessionStorage.getItem(STORAGE_TREE_KEY);
+    const raw = localStorage.getItem(STORAGE_TREE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (Date.now() - data.timestamp < DIR_CACHE_TTL && Array.isArray(data.allObjects)) {
@@ -23,6 +23,14 @@ export function loadVirtualTreeFromStorage() {
 }
 
 const initialTree = loadVirtualTreeFromStorage();
+
+function loadInitialUsedBytes() {
+  try {
+    return parseInt(localStorage.getItem(STORAGE_USAGE_KEY) || '0', 10) || 0;
+  } catch (_) {
+    return 0;
+  }
+}
 
 export const state = {
   currentPrefix:  '',
@@ -37,19 +45,19 @@ export const state = {
   loading:        false,
   allObjects:     initialTree ? initialTree.allObjects : null,
   isVirtualTree:  initialTree ? Boolean(initialTree.isVirtualTree) : false,
-  totalUsedBytes: parseInt(sessionStorage.getItem(STORAGE_USAGE_KEY) || '0', 10) || 0,
+  totalUsedBytes: loadInitialUsedBytes(),
 };
 
 export function saveVirtualTreeToStorage() {
   try {
     if (state.allObjects) {
-      sessionStorage.setItem(STORAGE_TREE_KEY, JSON.stringify({
+      localStorage.setItem(STORAGE_TREE_KEY, JSON.stringify({
         allObjects: state.allObjects,
         isVirtualTree: state.isVirtualTree,
         timestamp: Date.now(),
       }));
     } else {
-      sessionStorage.removeItem(STORAGE_TREE_KEY);
+      localStorage.removeItem(STORAGE_TREE_KEY);
     }
   } catch (_) {}
 }

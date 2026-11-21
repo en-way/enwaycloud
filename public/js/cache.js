@@ -1,6 +1,6 @@
 /**
  * public/js/cache.js
- * sessionStorage 目录/虚拟树持久化缓存、预览内存池、容量状态同步与本地乐观更新
+ * localStorage 目录/虚拟树持久化缓存、预览内存池、容量状态同步与本地乐观更新
  */
 
 import {
@@ -24,7 +24,7 @@ export function registerCacheUiCallbacks(callbacks) {
 
 function loadDirCacheFromStorage() {
   try {
-    const raw = sessionStorage.getItem(STORAGE_CACHE_KEY);
+    const raw = localStorage.getItem(STORAGE_CACHE_KEY);
     if (!raw) return new Map();
     const data = JSON.parse(raw);
     const map = new Map();
@@ -45,7 +45,7 @@ export const dirCache = loadDirCacheFromStorage();
 export function saveDirCacheToStorage() {
   try {
     const obj = Object.fromEntries(dirCache);
-    sessionStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(obj));
+    localStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(obj));
   } catch (_) {}
 }
 
@@ -72,7 +72,7 @@ export function updateStorageUI(usedBytes) {
   if (usedBytes != null) {
     state.totalUsedBytes = Math.max(0, usedBytes);
     try {
-      sessionStorage.setItem(STORAGE_USAGE_KEY, String(state.totalUsedBytes));
+      localStorage.setItem(STORAGE_USAGE_KEY, String(state.totalUsedBytes));
     } catch (_) {}
   }
   if (!dom.storageBadge) return;
@@ -90,6 +90,10 @@ export function clearDirCache() {
   clearHeicCache();
   xlsxPreviewCache.clear();
   try {
+    localStorage.removeItem(STORAGE_CACHE_KEY);
+    localStorage.removeItem(STORAGE_TREE_KEY);
+    localStorage.removeItem(STORAGE_USAGE_KEY);
+    // 顺手清理旧版 sessionStorage 残留
     sessionStorage.removeItem(STORAGE_CACHE_KEY);
     sessionStorage.removeItem(STORAGE_TREE_KEY);
     sessionStorage.removeItem(STORAGE_USAGE_KEY);
@@ -289,7 +293,7 @@ export function optimisticMoveItems(mappings) {
 
   saveVirtualTreeToStorage();
   dirCache.clear();
-  try { sessionStorage.removeItem(STORAGE_CACHE_KEY); } catch (_) {}
+  try { localStorage.removeItem(STORAGE_CACHE_KEY); } catch (_) {}
 
   if (state.isVirtualTree && state.allObjects) {
     const vData = extractVirtualDir(state.currentPrefix);
