@@ -9,6 +9,7 @@ import {
   STORAGE_TREE_KEY,
   STORAGE_USAGE_KEY,
   TOTAL_CAPACITY_BYTES,
+  MAX_HEIC_CACHE_ITEMS,
   formatSize,
   getFileCategory,
   escapeHtml,
@@ -60,8 +61,33 @@ export function saveDirCacheToStorage() {
 }
 
 export const textPreviewCache = new Map(); // key -> text content
-export const heicPreviewCache = new Map(); // key -> ObjectUrl
+export const heicPreviewCache = new Map(); // key -> ObjectUrl (LRU <= MAX_HEIC_CACHE_ITEMS)
 export const xlsxPreviewCache = new Map(); // key -> ArrayBuffer
+
+export function getHeicCache(key) {
+  if (!heicPreviewCache.has(key)) return null;
+  const url = heicPreviewCache.get(key);
+  // 命中后移至队尾维持 LRU 顺序
+  heicPreviewCache.delete(key);
+  heicPreviewCache.set(key, url);
+  return url;
+}
+
+export function setHeicCache(key, objectUrl) {
+  if (!objectUrl) return;
+  if (heicPreviewCache.has(key)) {
+    const old = heicPreviewCache.get(key);
+    if (old && old !== objectUrl) {
+      try { URL.revokeObjectURL(old); } catch (_) {}
+    }
+    heicPreviewCache.delete(key);
+  }
+  heicPreviewCache.set(key, objectUrl);
+  while (heicPreviewCache.size > MAX_HEIC_CACHE_ITEMS) {
+    const oldestKey = heicPreviewCache.keys().next().value;
+    revokeHeicCacheKey(oldestKey);
+  }
+}
 
 export function revokeHeicCacheKey(key) {
   const url = heicPreviewCache.get(key);

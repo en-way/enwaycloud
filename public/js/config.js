@@ -3,9 +3,9 @@
  * 全局常量配置、MIME 类型映射、基础工具函数与矢量 SVG 图标引擎
  */
 
-export const CHUNK_SIZE = 50 * 1024 * 1024;           // 严格锁定 50 MB 分块大小
-export const MULTIPART_THRESHOLD = 50 * 1024 * 1024;  // 严格锁定 50 MB 启用分块（<=50MB 走单次高效 PUT 直传）
-export const MAX_CONCURRENT_CHUNKS = 3;
+export const CHUNK_SIZE = 10 * 1024 * 1024;           // 10 MB 分块大小，充分吃满跨境并发
+export const MULTIPART_THRESHOLD = 20 * 1024 * 1024;  // 超过 20 MB 启用分块直传（<=20MB 走单次 PUT）
+export const MAX_CONCURRENT_CHUNKS = 5;               // 5 路并发分块
 export const MAX_CONCURRENT_FILES = 3;
 
 export const API = {
@@ -20,6 +20,8 @@ export const STORAGE_TREE_KEY  = 'r2_drive_tree_v2';
 export const STORAGE_USAGE_KEY = 'r2_drive_usage_v1';
 export const TOTAL_CAPACITY_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB 免费额度
 export const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;       // 文本在线预览上限 2 MB
+export const MAX_RICH_PREVIEW_BYTES = 30 * 1024 * 1024;      // DOCX/XLSX/ZIP 在线解析上限 30 MB
+export const MAX_HEIC_CACHE_ITEMS = 15;                      // HEIC 解码 ObjectURL 缓存上限
 
 export const EXT_TYPE_MAP = {
   // 图片

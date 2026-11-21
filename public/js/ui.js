@@ -102,6 +102,8 @@ export function renderTypeNav() {
   const degraded = !state.loading && !state.isVirtualTree;
   if (degraded && state.typeFilter !== 'all') {
     state.typeFilter = 'all';
+    state.selectedKeys.clear();
+    updateSelectionUI();
   }
 
   dom.typeNav.querySelectorAll('[data-type]').forEach(btn => {
@@ -125,6 +127,7 @@ export function setTypeFilter(type) {
   }
   state.typeFilter = type;
   state.selectedKeys.clear();
+  updateSelectionUI();
   closeDrawer();
   renderFileList();
 }
@@ -392,6 +395,10 @@ function getSortedItems() {
   });
 
   return { sortedFolders, sortedFiles, isFiltered };
+}
+
+export function getCurrentOrderedFiles() {
+  return getSortedItems().sortedFiles;
 }
 
 // ─── 选择联动 & 底部毛玻璃浮动操作条 ───────────────────────────────────────────
