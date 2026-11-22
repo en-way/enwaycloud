@@ -148,7 +148,7 @@ function renderUploadPanel() {
           </div>` : ''}
       </div>
       <div class="upload-item-actions">
-        <span class="upload-item-status status-${item.status}">${statusText}</span>
+        <span class="upload-item-status status-${item.status}">${escapeHtml(statusText)}</span>
         ${isCancellable ? `
           <button type="button" class="btn-cancel-upload" data-cancel-id="${item.id}" title="取消上传" aria-label="取消上传">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">

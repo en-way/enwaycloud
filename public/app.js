@@ -75,7 +75,7 @@ async function initAuth() {
   }
   showLogin();
   if (result.status === 503) {
-    dom.loginError.textContent = '服务端尚未配置访问密码 (DRIVE_PASSWORD)，请联系管理员配置';
+    dom.loginError.textContent = '服务端尚未完成访问密码配置，请联系管理员';
     dom.loginError.hidden = false;
   }
 }
@@ -230,7 +230,7 @@ export async function loadFiles(prefix = '', forceRefresh = false) {
         clearDirCache();
         showLogin();
         if (res.status === 503) {
-          dom.loginError.textContent = '服务端尚未配置访问密码 (DRIVE_PASSWORD)';
+          dom.loginError.textContent = '服务端尚未完成访问密码配置，请联系管理员';
           dom.loginError.hidden = false;
         }
         return;

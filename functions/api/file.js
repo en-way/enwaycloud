@@ -92,6 +92,10 @@ function inferContentType(key, httpMetadata = {}) {
   return MIME_MAP[ext] || 'application/octet-stream';
 }
 
+function isPlainObject(val) {
+  return Boolean(val && typeof val === 'object' && !Array.isArray(val));
+}
+
 /**
  * 清除 Cloudflare Edge 边缘缓存 (支持单 key 或批量 key 数组，自动去重 URL)
  * 使用 context.waitUntil 守护异步淘汰，杜绝 Worker 实例提前休眠导致任务丢失
@@ -119,7 +123,15 @@ function purgeEdgeCache(context, requestUrl, keysOrKey) {
       fileUrl.search = `?key=${encodeURIComponent(key)}`;
       urlSet.add(fileUrl.toString());
 
-      // 2. 所在目录缓存
+      // 2. 如果是目录 key（以 / 结尾），同时清理该目录自身的列表缓存
+      if (key.endsWith('/')) {
+        const selfDirUrl = new URL(requestUrl);
+        selfDirUrl.pathname = '/api/files';
+        selfDirUrl.search = `?prefix=${encodeURIComponent(key)}`;
+        urlSet.add(selfDirUrl.toString());
+      }
+
+      // 3. 上级父目录缓存（目录 key 先剥离尾部 / 再计算父级 prefix）
       const dirUrl = new URL(requestUrl);
       dirUrl.pathname = '/api/files';
       const trimmed = key.endsWith('/') ? key.slice(0, -1) : key;
@@ -279,8 +291,8 @@ async function handlePut(request, env, context) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
 
-  if (!key) {
-    return jsonResponse({ error: '缺少 key 参数' }, 400);
+  if (!key || key.endsWith('/')) {
+    return jsonResponse({ error: '缺少有效的文件 key 参数（不能以 / 结尾）' }, 400);
   }
 
   try {
@@ -333,8 +345,8 @@ async function handleCreateMultipart(request, env) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
 
-  if (!key) {
-    return jsonResponse({ error: '缺少 key 参数' }, 400);
+  if (!key || key.endsWith('/')) {
+    return jsonResponse({ error: '缺少有效的文件 key 参数（不能以 / 结尾）' }, 400);
   }
 
   try {
@@ -362,11 +374,12 @@ async function handleCreateMultipart(request, env) {
 async function handleUploadPart(request, env) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
-  const uploadId = url.searchParams.get('uploadId');
-  const partNumber = parseInt(url.searchParams.get('partNumber') || '0', 10);
+  const uploadId = (url.searchParams.get('uploadId') || '').trim();
+  const rawPart = (url.searchParams.get('partNumber') || '').trim();
+  const partNumber = /^\d+$/.test(rawPart) ? Number(rawPart) : NaN;
 
-  if (!key || !uploadId || !partNumber) {
-    return jsonResponse({ error: '缺少必要参数: key, uploadId, partNumber' }, 400);
+  if (!key || key.endsWith('/') || !uploadId || !Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
+    return jsonResponse({ error: '参数不合法: 需提供有效的 key、uploadId 及 1–10000 的整数 partNumber' }, 400);
   }
 
   try {
@@ -393,19 +406,37 @@ async function handleCompleteMultipart(request, env, context) {
   const url = new URL(request.url);
   const key = sanitizeKey(url.searchParams.get('key'));
 
-  if (!key) {
-    return jsonResponse({ error: '缺少 key 参数' }, 400);
+  if (!key || key.endsWith('/')) {
+    return jsonResponse({ error: '缺少有效的文件 key 参数（不能以 / 结尾）' }, 400);
+  }
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ error: '请求体必须为有效 JSON' }, 400);
+  }
+
+  if (!isPlainObject(body)) {
+    return jsonResponse({ error: '请求体必须为 JSON 对象' }, 400);
+  }
+
+  const { uploadId, parts } = body;
+  const validParts = Array.isArray(parts) && parts.length > 0 && parts.every(
+    p => isPlainObject(p)
+      && Number.isInteger(p.partNumber)
+      && p.partNumber >= 1
+      && p.partNumber <= 10000
+      && typeof p.etag === 'string'
+      && p.etag.trim().length > 0
+  );
+
+  if (typeof uploadId !== 'string' || !uploadId.trim() || !validParts) {
+    return jsonResponse({ error: '缺少有效的 uploadId 或 parts 数据' }, 400);
   }
 
   try {
-    const body = await request.json();
-    const { uploadId, parts } = body;
-
-    if (!uploadId || !Array.isArray(parts) || parts.length === 0) {
-      return jsonResponse({ error: '缺少 uploadId 或 parts 数据' }, 400);
-    }
-
-    const multipartUpload = env.R2_BUCKET.resumeMultipartUpload(key, uploadId);
+    const multipartUpload = env.R2_BUCKET.resumeMultipartUpload(key, uploadId.trim());
     const object = await multipartUpload.complete(parts);
     purgeEdgeCache(context, request.url, key);
 
@@ -481,8 +512,18 @@ async function handleDelete(request, env, context) {
  * Body: { keys: string[], expandFolders?: boolean }
  */
 async function handleBatchDelete(request, env, context) {
+  let body = null;
   try {
-    const body = await request.json().catch(() => ({}));
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ error: '请求体必须为有效 JSON' }, 400);
+  }
+
+  if (!isPlainObject(body)) {
+    return jsonResponse({ error: '请求体必须为 JSON 对象' }, 400);
+  }
+
+  try {
     const { keys, expandFolders } = body;
 
     if (!Array.isArray(keys) || keys.length === 0) {
@@ -490,7 +531,10 @@ async function handleBatchDelete(request, env, context) {
     }
 
     const keySet = new Set(
-      keys.map(sanitizeKey).filter(k => k.length > 0)
+      keys
+        .filter(k => typeof k === 'string')
+        .map(sanitizeKey)
+        .filter(k => k.length > 0)
     );
 
     if (keySet.size === 0) {
@@ -534,8 +578,18 @@ async function handleBatchDelete(request, env, context) {
  * Body: { items: [{ from: string, to: string, expandFolder?: boolean }] }
  */
 async function handleMove(request, env, context) {
+  let body = null;
   try {
-    const body = await request.json().catch(() => ({}));
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ error: '请求体必须为有效 JSON' }, 400);
+  }
+
+  if (!isPlainObject(body)) {
+    return jsonResponse({ error: '请求体必须为 JSON 对象' }, 400);
+  }
+
+  try {
     const { items } = body;
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -545,9 +599,19 @@ async function handleMove(request, env, context) {
     // 若存在降级模式下的未展开文件夹（expandFolder=true），后端自动按前缀展开
     const expandedItems = [];
     for (const item of items.slice(0, 500)) {
+      if (!isPlainObject(item) || typeof item.from !== 'string' || typeof item.to !== 'string') {
+        return jsonResponse({ error: 'items 中包含非法元素' }, 400);
+      }
+
       const fromKey = sanitizeKey(item.from);
       const toKey = sanitizeKey(item.to);
-      if (!fromKey || !toKey) continue;
+      if (!fromKey || !toKey) {
+        return jsonResponse({ error: 'items 中存在空路径' }, 400);
+      }
+
+      if (fromKey.endsWith('/') && toKey.startsWith(fromKey)) {
+        return jsonResponse({ error: '不能将文件夹移动到自身或其子目录下' }, 400);
+      }
 
       if (item.expandFolder && fromKey.endsWith('/') && toKey.endsWith('/')) {
         const listed = await env.R2_BUCKET.list({ prefix: fromKey, limit: 1000 });
@@ -578,6 +642,10 @@ async function handleMove(request, env, context) {
       if (!fromKey || !toKey || fromKey === toKey) {
         results.push({ from: item.from, to: item.to, success: false, error: '无效的源路径或目标路径' });
         continue;
+      }
+
+      if (fromKey.endsWith('/') && toKey.startsWith(fromKey)) {
+        return jsonResponse({ error: '不能将文件夹移动到自身或其子目录下' }, 400);
       }
 
       // 检查源对象

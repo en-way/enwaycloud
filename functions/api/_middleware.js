@@ -59,7 +59,7 @@ export async function onRequest(context) {
       return applyCorsHeaders(response, corsHeaders);
     }
     return jsonResponse(
-      { error: 'Service Unavailable', message: '服务端未配置访问密码 (DRIVE_PASSWORD)' },
+      { error: 'Service Unavailable', message: '服务端尚未完成访问密码配置' },
       503,
       corsHeaders
     );

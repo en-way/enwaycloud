@@ -26,14 +26,18 @@ export async function onRequestPost({ request, env }) {
     if (env.ALLOW_PUBLIC_ACCESS === 'true') {
       return jsonResponse({ ok: true, publicMode: true, message: 'Public mode enabled' }, 200);
     }
-    return jsonResponse({ error: 'Service Unavailable', message: '服务端未配置 DRIVE_PASSWORD' }, 503);
+    return jsonResponse({ error: 'Service Unavailable', message: '服务端尚未完成访问密码配置' }, 503);
   }
 
-  let body = {};
+  let body = null;
   try {
     body = await request.json();
   } catch (_) {
     return jsonResponse({ error: 'Bad Request', message: '请求体必须为有效 JSON' }, 400);
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonResponse({ error: 'Bad Request', message: '请求体必须为 JSON 对象' }, 400);
   }
 
   const password = typeof body.password === 'string' ? body.password : '';

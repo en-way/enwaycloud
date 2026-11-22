@@ -16,9 +16,16 @@ const decoder = new TextDecoder();
  */
 export function sanitizeKey(key) {
   if (!key || typeof key !== 'string') return '';
-  let cleaned = key.trim().replace(/^\/+/, '').replace(/\/+/g, '/');
-  if (cleaned.includes('..')) {
-    cleaned = cleaned.split('/').filter(p => p !== '..' && p !== '.').join('/');
+  let cleaned = key
+    .replace(/\0/g, '')
+    .replace(/\\/g, '/')
+    .trim()
+    .replace(/^\/+/, '')
+    .replace(/\/+/g, '/');
+  if (cleaned.includes('..') || cleaned.includes('./') || cleaned === '.') {
+    const trailingSlash = cleaned.endsWith('/');
+    cleaned = cleaned.split('/').filter(p => p && p !== '..' && p !== '.').join('/');
+    if (cleaned && trailingSlash) cleaned += '/';
   }
   return cleaned;
 }
@@ -107,7 +114,10 @@ function fromBase64Url(str) {
 }
 
 async function getHmacKey(env) {
-  const secretSource = env.SESSION_SECRET || env.DRIVE_PASSWORD || '';
+  const secretSource = (env && (env.SESSION_SECRET || env.DRIVE_PASSWORD)) || '';
+  if (!secretSource) {
+    throw new Error('Missing SESSION_SECRET or DRIVE_PASSWORD');
+  }
   const keyMaterial = await crypto.subtle.digest(
     'SHA-256',
     encoder.encode(`enwaycloud-session-v1:${secretSource}`)
@@ -162,7 +172,7 @@ export async function verifySessionToken(token, env) {
     if (!valid) return false;
 
     const payload = JSON.parse(decoder.decode(fromBase64Url(payloadB64)));
-    if (!payload || typeof payload.exp !== 'number') return false;
+    if (!payload || payload.v !== 1 || typeof payload.exp !== 'number') return false;
     return payload.exp > Math.floor(Date.now() / 1000);
   } catch (_) {
     return false;
@@ -184,7 +194,12 @@ export function parseCookie(request, name = SESSION_COOKIE_NAME) {
     if (eqIdx === -1) continue;
     const k = pair.slice(0, eqIdx).trim();
     if (k === name) {
-      return decodeURIComponent(pair.slice(eqIdx + 1).trim());
+      const rawVal = pair.slice(eqIdx + 1).trim();
+      try {
+        return decodeURIComponent(rawVal);
+      } catch (_) {
+        return rawVal;
+      }
     }
   }
   return '';
