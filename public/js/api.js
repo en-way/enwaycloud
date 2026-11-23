@@ -23,10 +23,14 @@ export function buildDownloadUrl(key) {
 }
 
 export async function apiFetch(url, options = {}) {
-  return fetch(url, {
+  const res = await fetch(url, {
     ...options,
     credentials: 'same-origin',
   });
+  if (res.status === 401 && !String(url).startsWith(API.auth)) {
+    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+  }
+  return res;
 }
 
 export function downloadFile(key) {
@@ -59,7 +63,12 @@ export function showToast(message, type = 'info', duration = 3000) {
   }, duration);
 }
 
+let activeConfirmCancel = null;
+
 export function showConfirm(title, message) {
+  if (typeof activeConfirmCancel === 'function') {
+    activeConfirmCancel();
+  }
   return new Promise(resolve => {
     dom.confirmTitle.textContent = title;
     dom.confirmMessage.textContent = message;
@@ -67,14 +76,21 @@ export function showConfirm(title, message) {
 
     const onOk = () => { cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
+    const onBackdrop = e => {
+      if (e.target === dom.confirmModal) onCancel();
+    };
 
     function cleanup() {
+      if (activeConfirmCancel === onCancel) activeConfirmCancel = null;
       dom.confirmModal.hidden = true;
       dom.btnConfirmOk.removeEventListener('click', onOk);
       dom.btnConfirmCancel.removeEventListener('click', onCancel);
+      dom.confirmModal.removeEventListener('click', onBackdrop);
     }
 
+    activeConfirmCancel = onCancel;
     dom.btnConfirmOk.addEventListener('click', onOk);
     dom.btnConfirmCancel.addEventListener('click', onCancel);
+    dom.confirmModal.addEventListener('click', onBackdrop);
   });
 }

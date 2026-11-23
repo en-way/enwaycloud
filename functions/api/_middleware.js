@@ -52,6 +52,22 @@ export async function onRequest(context) {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
+  // 0. 同源 CSRF 纵深校验（保护所有修改型方法）
+  if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
+    const origin = request.headers.get('Origin');
+    const allowedOrigin = (env.ALLOWED_ORIGIN || '').trim();
+    if (origin) {
+      if (origin !== url.origin && (!allowedOrigin || origin !== allowedOrigin)) {
+        return jsonResponse({ error: 'Forbidden', message: '拒绝跨源修改请求' }, 403, corsHeaders);
+      }
+    } else {
+      const secFetchSite = request.headers.get('Sec-Fetch-Site');
+      if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+        return jsonResponse({ error: 'Forbidden', message: '拒绝跨站修改请求' }, 403, corsHeaders);
+      }
+    }
+  }
+
   // 1. Fail-Closed 检查：未设置密码且未显式允许公开访问，拒绝服务
   if (!env.DRIVE_PASSWORD) {
     if (env.ALLOW_PUBLIC_ACCESS === 'true') {

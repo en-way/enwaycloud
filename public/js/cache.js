@@ -307,11 +307,14 @@ export function optimisticAddFolder(folderKey) {
   uiCallbacks.renderFileList();
 }
 
-export function optimisticAddFile(key, size, mimeType) {
+export function optimisticAddFile(key, size, mimeType, etag = null) {
   textPreviewCache.delete(key);
   revokeHeicCacheKey(key);
   xlsxPreviewCache.delete(key);
-  const oldFile = state.files.find(f => f.key === key) || (state.allObjects && state.allObjects.find(o => o.key === key));
+
+  const filePrefix = key.includes('/') ? key.slice(0, key.lastIndexOf('/') + 1) : '';
+  const oldFile = (state.allObjects && state.allObjects.find(o => o.key === key))
+    || (filePrefix === state.currentPrefix ? state.files.find(f => f.key === key) : null);
   const diff = size - (oldFile ? (oldFile.size || 0) : 0);
 
   const newFile = {
@@ -319,7 +322,7 @@ export function optimisticAddFile(key, size, mimeType) {
     size,
     uploaded: new Date().toISOString(),
     httpMetadata: { contentType: mimeType || 'application/octet-stream' },
-    etag: null,
+    etag: etag || null,
   };
 
   if (state.allObjects) {
@@ -328,10 +331,12 @@ export function optimisticAddFile(key, size, mimeType) {
     saveVirtualTreeToStorage();
   }
 
-  state.files = state.files.filter(f => f.key !== key);
-  state.files.push(newFile);
+  if (filePrefix === state.currentPrefix) {
+    state.files = state.files.filter(f => f.key !== key);
+    state.files.push(newFile);
+  }
 
-  const cached = dirCache.get(state.currentPrefix);
+  const cached = dirCache.get(filePrefix);
   if (cached) {
     cached.files = cached.files.filter(f => f.key !== key);
     cached.files.push(newFile);

@@ -16,18 +16,15 @@ const decoder = new TextDecoder();
  */
 export function sanitizeKey(key) {
   if (!key || typeof key !== 'string') return '';
-  let cleaned = key
-    .replace(/\0/g, '')
+  const raw = key
+    .replace(/[\x00-\x1f\x7f]/g, '')
     .replace(/\\/g, '/')
-    .trim()
-    .replace(/^\/+/, '')
-    .replace(/\/+/g, '/');
-  if (cleaned.includes('..') || cleaned.includes('./') || cleaned === '.') {
-    const trailingSlash = cleaned.endsWith('/');
-    cleaned = cleaned.split('/').filter(p => p && p !== '..' && p !== '.').join('/');
-    if (cleaned && trailingSlash) cleaned += '/';
-  }
-  return cleaned;
+    .trim();
+  if (!raw) return '';
+  const trailingSlash = raw.endsWith('/');
+  const parts = raw.split('/').filter(p => p && p !== '..' && p !== '.');
+  if (parts.length === 0) return '';
+  return parts.join('/') + (trailingSlash ? '/' : '');
 }
 
 /**

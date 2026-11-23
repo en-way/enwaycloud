@@ -69,15 +69,17 @@ function syncUploadPanelSummary() {
 }
 
 export function enqueueFiles(files) {
+  const targetPrefix = state.currentPrefix;
   const items = files.map(file => ({
-    id:       uid(),
+    id:           uid(),
     file,
-    name:     file.name,
-    size:     file.size,
-    status:   'pending',
-    progress: 0,
-    error:    null,
-    abort:    null,
+    name:         file.name,
+    size:         file.size,
+    targetPrefix,
+    status:       'pending',
+    progress:     0,
+    error:        null,
+    abort:        null,
   }));
   state.uploadQueue.push(...items);
   state.uploadPanelCollapsed = false;
@@ -223,18 +225,17 @@ async function processUploadQueue() {
 
 async function uploadFile(item) {
   if (item.status === 'canceled') return;
-  const key = state.currentPrefix + item.name;
+  const targetPrefix = item.targetPrefix ?? state.currentPrefix;
+  const key = targetPrefix + item.name;
   try {
-    if (item.size >= MULTIPART_THRESHOLD) {
-      await uploadMultipart(item, key);
-    } else {
-      await uploadSimple(item, key);
-    }
+    const etag = item.size >= MULTIPART_THRESHOLD
+      ? await uploadMultipart(item, key)
+      : await uploadSimple(item, key);
     if (item.status === 'canceled') return;
     item.status = 'done';
     item.progress = 100;
     showToast(`${item.name} 上传成功`, 'success');
-    optimisticAddFile(key, item.size, item.file.type);
+    optimisticAddFile(key, item.size, item.file.type, etag);
   } catch (err) {
     if (item.status === 'canceled' || err.name === 'AbortError' || err.message === 'Upload aborted') {
       item.status = 'canceled';
@@ -250,7 +251,7 @@ async function uploadFile(item) {
 
 async function uploadSimple(item, key) {
   const contentType = item.file.type || 'application/octet-stream';
-  await new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     item.abort = () => {
       xhr.abort();
@@ -269,17 +270,25 @@ async function uploadSimple(item, key) {
     };
 
     xhr.onload = () => {
-      if (item.status === 'canceled') return resolve();
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`HTTP ${xhr.status}`));
+      if (item.status === 'canceled') return resolve(null);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        let etag = null;
+        try {
+          const data = JSON.parse(xhr.responseText || '{}');
+          etag = data.etag || null;
+        } catch (_) {}
+        resolve(etag);
+      } else {
+        reject(new Error(`HTTP ${xhr.status}`));
+      }
     };
     xhr.onerror = () => {
-      if (item.status === 'canceled') return resolve();
+      if (item.status === 'canceled') return resolve(null);
       reject(new Error('网络中断，上传失败'));
     };
     xhr.onabort = () => {
       item.status = 'canceled';
-      resolve();
+      resolve(null);
     };
     xhr.send(item.file);
   });
@@ -366,6 +375,8 @@ async function uploadMultipart(item, key) {
       const d = await completeRes.json().catch(() => ({}));
       throw new Error(d.error || '完成分块合并失败');
     }
+    const completeData = await completeRes.json().catch(() => ({}));
+    return completeData?.etag || null;
   } catch (err) {
     apiFetch(
       `${API.file}?key=${encodeURIComponent(key)}&action=abortMultipart&uploadId=${encodeURIComponent(uploadId)}`,

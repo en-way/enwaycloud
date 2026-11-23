@@ -55,8 +55,12 @@ const MIME_MAP = {
   md: 'text/markdown; charset=utf-8',
   html: 'text/html; charset=utf-8',
   htm: 'text/html; charset=utf-8',
+  xhtml: 'application/xhtml+xml',
+  svgz: 'image/svg+xml',
   css: 'text/css; charset=utf-8',
   js: 'text/javascript; charset=utf-8',
+  mjs: 'text/javascript; charset=utf-8',
+  cjs: 'text/javascript; charset=utf-8',
   ts: 'text/typescript; charset=utf-8',
   json: 'application/json; charset=utf-8',
   xml: 'application/xml; charset=utf-8',
@@ -232,16 +236,19 @@ async function handleGet(request, env, context) {
       'Content-Security-Policy': "default-src 'none'; sandbox",
     });
 
-    const safeAsciiName = fileName.replace(/["\r\n\\]/g, '_');
+    const safeAsciiName = fileName.replace(/[^\x20-\x7E]|["\\]/g, '_') || 'file';
+    const encodedFileName = encodeURIComponent(fileName).replace(/'/g, '%27');
     if (forceDownload || isDangerousMime) {
       // 对下载或高危可执行文件（HTML/SVG/XML/JS）强制 attachment，杜绝同源 XSS
-      const encodedFileName = encodeURIComponent(fileName).replace(/'/g, "%27");
       headers.set(
         'Content-Disposition',
         `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedFileName}`
       );
     } else {
-      headers.set('Content-Disposition', `inline; filename="${safeAsciiName}"`);
+      headers.set(
+        'Content-Disposition',
+        `inline; filename="${safeAsciiName}"; filename*=UTF-8''${encodedFileName}`
+      );
     }
 
     // 4. 处理 Range 206 Partial Content
@@ -297,11 +304,11 @@ async function handlePut(request, env, context) {
 
   try {
     const contentType = inferContentType(key);
-    await env.R2_BUCKET.put(key, request.body, {
+    const putObj = await env.R2_BUCKET.put(key, request.body, {
       httpMetadata: { contentType },
     });
     purgeEdgeCache(context, request.url, key);
-    return jsonResponse({ success: true, key, message: '上传成功' });
+    return jsonResponse({ success: true, key, etag: putObj?.etag || null, message: '上传成功' });
   } catch (err) {
     console.error('[file.js] PUT error:', err);
     return jsonResponse({ error: '上传失败，请稍后重试' }, 500);
@@ -591,6 +598,7 @@ async function handleMove(request, env, context) {
 
   try {
     const { items } = body;
+    const allowOverwrite = body.overwrite === true;
 
     if (!Array.isArray(items) || items.length === 0) {
       return jsonResponse({ error: '缺少有效的 items 数组' }, 400);
@@ -607,6 +615,10 @@ async function handleMove(request, env, context) {
       const toKey = sanitizeKey(item.to);
       if (!fromKey || !toKey) {
         return jsonResponse({ error: 'items 中存在空路径' }, 400);
+      }
+
+      if (fromKey.endsWith('/') !== toKey.endsWith('/')) {
+        return jsonResponse({ error: '源路径与目标路径类型不一致（文件与文件夹不能互转）' }, 400);
       }
 
       if (fromKey.endsWith('/') && toKey.startsWith(fromKey)) {
@@ -644,8 +656,26 @@ async function handleMove(request, env, context) {
         continue;
       }
 
+      if (fromKey.endsWith('/') !== toKey.endsWith('/')) {
+        results.push({ from: fromKey, to: toKey, success: false, error: '源路径与目标路径类型不一致' });
+        continue;
+      }
+
       if (fromKey.endsWith('/') && toKey.startsWith(fromKey)) {
         return jsonResponse({ error: '不能将文件夹移动到自身或其子目录下' }, 400);
+      }
+
+      if (!allowOverwrite) {
+        const dstExisting = typeof env.R2_BUCKET.head === 'function'
+          ? await env.R2_BUCKET.head(toKey)
+          : await env.R2_BUCKET.get(toKey);
+        if (dstExisting) {
+          if (dstExisting.body && typeof dstExisting.body.cancel === 'function') {
+            try { await dstExisting.body.cancel(); } catch (_) {}
+          }
+          results.push({ from: fromKey, to: toKey, success: false, conflict: true, error: '目标路径已存在同名对象' });
+          continue;
+        }
       }
 
       // 检查源对象
@@ -660,10 +690,13 @@ async function handleMove(request, env, context) {
         continue;
       }
 
-      // 对 0 字节对象或空流写入空字符串，规避 ReadableStream 读空异常
+      // 对 0 字节对象或空流写入空字符串，规避 ReadableStream 读空异常，并按目标扩展名重算 Content-Type
       const objBody = (srcObj.size === 0 || !srcObj.body) ? '' : srcObj.body;
+      const nextContentType = toKey.endsWith('/')
+        ? 'application/x-directory'
+        : inferContentType(toKey);
       await env.R2_BUCKET.put(toKey, objBody, {
-        httpMetadata: srcObj.httpMetadata,
+        httpMetadata: { ...(srcObj.httpMetadata || {}), contentType: nextContentType },
         customMetadata: srcObj.customMetadata,
       });
 
@@ -682,12 +715,13 @@ async function handleMove(request, env, context) {
     const failedCount = results.length - movedCount;
 
     if (movedCount === 0 && failedCount > 0) {
+      const hasConflict = results.some(r => r.conflict);
       return jsonResponse({
         success: false,
         error: results[0]?.error || '移动失败，未找到源对象',
         movedCount: 0,
         results,
-      }, 404);
+      }, hasConflict ? 409 : 404);
     }
 
     return jsonResponse({

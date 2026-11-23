@@ -93,6 +93,19 @@ function showLogin() {
   setTimeout(() => dom.passwordInput?.focus(), 150);
 }
 
+window.addEventListener('auth:unauthorized', () => {
+  if (!dom.app.hidden) {
+    clearDirCache();
+    state.currentPrefix = '';
+    state.files = [];
+    state.folders = [];
+    state.selectedKeys.clear();
+    state.typeFilter = 'all';
+    showLogin();
+    showToast('会话已过期，请重新验证', 'warning');
+  }
+});
+
 function showApp() {
   dom.loginModal.hidden = true;
   dom.app.hidden = false;
@@ -328,7 +341,7 @@ document.addEventListener('keydown', e => {
     if (!dom.renameModal.hidden)  { closeRenameModal(); return; }
     if (!dom.moveModal.hidden)    { closeMoveModal(); return; }
     if (!dom.mkdirModal.hidden)   { dom.mkdirModal.hidden = true; return; }
-    if (!dom.confirmModal.hidden) { dom.confirmModal.hidden = true; return; }
+    if (!dom.confirmModal.hidden) { dom.btnConfirmCancel?.click(); return; }
     if (isRowSheetOpen())         { closeRowSheet(); return; }
     if (isFabMenuOpen())          { closeFabMenu(); return; }
     if (isDrawerOpen())           { closeDrawer(); return; }
